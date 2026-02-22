@@ -15,66 +15,43 @@ const managerRightsSchema = new mongoose.Schema({
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
-  name:         { type: String, required: true },
-  email:        { type: String, required: true, unique: true },
-  password:     { type: String, required: true },
-  role: {
-    type: String,
-    enum: Object.values(UserRole),
-    required: true
-  },
-  phone:        { type: String, required: true },
-  address:      { type: String },
-  branchId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
+  name:     { type: String, required: true, trim: true },
+  email:    { type: String, required: true, unique: true, lowercase: true },
+  password: { type: String, required: true },
+  role:     { type: String, enum: Object.values(UserRole), required: true },
 
-  // ---- Wage configuration (HR sets this) ----
-  wageType:     { type: String, enum: ['hourly','daily','monthly'], default: 'hourly' },
-  hourlyRate:   { type: Number, default: 0 },
-  dailyRate:    { type: Number, default: 0 },
-  monthlyRate:  { type: Number, default: 0 },
+  cnic:     { type: String, default: '', trim: true },  // <-- CNIC
+  phone:    { type: String, required: true },
+  address:  { type: String, default: '' },
+  branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
 
-  // ---- Leave policy ----
+  wageType:    { type: String, enum: ['hourly', 'daily', 'monthly'], default: 'hourly' },
+  hourlyRate:  { type: Number, default: 0 },
+  dailyRate:   { type: Number, default: 0 },
+  monthlyRate: { type: Number, default: 0 },
+
   leavesPerMonth: { type: Number, default: 2 },
 
-  // ---- Account state ----
   isActive:     { type: Boolean, default: true },
-  profileImage: { type: String },
+  isApproved:   { type: Boolean, default: false },   // admin must approve before login
+  profileImage: { type: String, default: null },
   joinDate:     { type: Date, default: Date.now },
-  createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  approvedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  isApproved:   { type: Boolean, default: false },
 
-  // Manager-specific rights
-  managerRights: {
-    type: managerRightsSchema,
-    default: () => ({})
-  }
+  createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  approvedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+  managerRights: { type: managerRightsSchema, default: () => ({}) },
 }, { timestamps: true });
-
-// Virtual: resolved rights (fullControl overrides everything)
-userSchema.virtual('resolvedRights').get(function () {
-  if (this.role !== 'manager') return null;
-  const r = this.managerRights || {};
-  if (r.fullControl) {
-    return {
-      orders: true, parcel: true, staff: true,
-      inventory: true, products: true, deals: true,
-      reports: true, hr: true, fullControl: true
-    };
-  }
-  return r;
-});
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   if (this.password.startsWith('$2a$') || this.password.startsWith('$2b$')) return next();
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  this.password = await bcrypt.hash(this.password, 10);
   next();
 });
 
-userSchema.methods.comparePassword = async function (candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
+userSchema.methods.comparePassword = function (candidate) {
+  return bcrypt.compare(candidate, this.password);
 };
 
 module.exports = mongoose.model('User', userSchema);

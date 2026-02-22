@@ -14,6 +14,7 @@ const {
   getAllRequests,
   approveRequest,
   rejectRequest,
+  issueApprovedRequest,        // ✅ WAS MISSING FROM ROUTER
   createSupplier,
   getAllSuppliers,
   updateSupplier,
@@ -29,7 +30,7 @@ const {
   getTotalStock,
   getPendingReturnRequests,
   approveReturnRequest,
-  rejectReturnRequest
+  rejectReturnRequest,
 } = require('../controllers/inventoryOfficerController');
 
 router.use(protect);
@@ -61,6 +62,9 @@ router.get('/total-stock', getTotalStock);
 router.get('/requests', getAllRequests);
 router.put('/requests/:id/approve', approveRequest);
 router.put('/requests/:id/reject', rejectRequest);
+router.put('/requests/:id/issue', issueApprovedRequest);   // ✅ FIXED: YEH ROUTE MISSING THA
+
+// Chef bhi request kar sakta hai (alag middleware se)
 router.post('/requests/create', protect, checkRole(UserRole.CHEF), createRequest);
 
 // ── Suppliers ─────────────────────────────────────────────────────────────────
@@ -75,7 +79,7 @@ router.post('/suppliers/payment', recordSupplierPayment);
 router.get('/reports/inventory', getInventoryReport);
 router.get('/reports/cost-analysis', getCostAnalysis);
 
-// ── Return Requests ───────────────────────────────────────────────────────────
+// ── Return Requests (chef se aaye hue) ───────────────────────────────────────
 router.get('/return-requests', getPendingReturnRequests);
 router.put('/return-requests/:id/approve', approveReturnRequest);
 router.put('/return-requests/:id/reject', rejectReturnRequest);

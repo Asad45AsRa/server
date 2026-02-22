@@ -1,3 +1,4 @@
+require('dotenv').config({ path: require('path').resolve(__dirname, '.env') });
 require('dotenv').config();
 const http = require('http');
 const socketIO = require('socket.io');

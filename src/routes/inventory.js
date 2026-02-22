@@ -14,14 +14,26 @@ const {
 
 router.use(protect);
 
-// All authenticated users can view inventory
+// ── READ: Saray authenticated users inventory dekh sakte hain ─────────────
 router.get('/', getAllInventory);
+router.get('/low-stock', getLowStockItems);
 
-// Admin and Manager can manage inventory
-router.post('/', checkRole(UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, 'inventory_officer'), createInventoryItem);
-router.put('/:id', checkRole(UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, 'inventory_officer'), updateInventoryItem);
-router.put('/:id/restock', checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'), restockInventory);
-router.get('/low-stock', checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'), getLowStockItems);
-router.post('/assign-chef', checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'), assignInventoryToChef);
+// ── WRITE: Sirf authorized roles ──────────────────────────────────────────
+router.post('/',
+  checkRole(UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, 'inventory_officer'),
+  createInventoryItem
+);
+router.put('/:id',
+  checkRole(UserRole.ADMIN, UserRole.MANAGER, UserRole.CASHIER, 'inventory_officer'),
+  updateInventoryItem
+);
+router.put('/:id/restock',
+  checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'),
+  restockInventory
+);
+router.post('/assign-chef',
+  checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'),
+  assignInventoryToChef
+);
 
 module.exports = router;

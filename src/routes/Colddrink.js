@@ -7,20 +7,22 @@ const ctrl = require('../controllers/Colddrinkcontroller');
 
 router.use(protect);
 
-// ── Inventory Officer & Admin: Full CRUD ──────────────────────────────────
-router.get('/',    checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.getAllColdDrinks);
-router.post('/',   checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.createColdDrink);
-router.put('/:id', checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.updateColdDrink);
+// ── READ: Saray authenticated users cold drinks dekh sakte hain ───────────
+// Admin, Inventory Officer, Cashier, Manager, Waiter, Delivery — sab
+router.get('/', ctrl.getAllColdDrinks);
+
+// ── Mobile API (menu ke liye) ─────────────────────────────────────────────
+router.get('/mobile', ctrl.getColdDrinksForMobile);
+
+// ── WRITE: Sirf Admin aur Inventory Officer ───────────────────────────────
+router.post('/',      checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.createColdDrink);
+router.put('/:id',    checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.updateColdDrink);
 router.delete('/:id', checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.deleteColdDrink);
 
-// Size management
-router.post('/:id/sizes',                    checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.addSize);
-router.put('/:id/sizes/:sizeId',             checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.updateSize);
-router.put('/:id/sizes/:sizeId/restock',     checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.restockSize);
-router.delete('/:id/sizes/:sizeId',          checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.deleteSize);
-
-// ── Mobile API endpoint (used by mobile app to build menu) ────────────────
-// Mobile app will call: GET /api/cold-drinks/mobile?branchId=xxx
-router.get('/mobile', ctrl.getColdDrinksForMobile);
+// ── Size management: Sirf Admin aur Inventory Officer ────────────────────
+router.post('/:id/sizes',                checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.addSize);
+router.put('/:id/sizes/:sizeId',         checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.updateSize);
+router.put('/:id/sizes/:sizeId/restock', checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.restockSize);
+router.delete('/:id/sizes/:sizeId',      checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.deleteSize);
 
 module.exports = router;

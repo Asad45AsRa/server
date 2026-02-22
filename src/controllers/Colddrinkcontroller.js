@@ -1,17 +1,31 @@
 const ColdDrink = require('../models/Colddrink');
 
-// ── GET all (inventory officer / admin) ──────────────────────────────────
+// ── Helper: branchId resolve karo (admin ke pass branchId nahi hota) ─────────
+const resolveBranchId = (req) => {
+  if (req.user.role === 'admin') {
+    // Admin: query param se lo, warna sab branches
+    return req.query.branchId || null;
+  }
+  return req.user.branchId || null;
+};
+
+// ── GET all ───────────────────────────────────────────────────────────────────
 exports.getAllColdDrinks = async (req, res) => {
   try {
-    const drinks = await ColdDrink.find({ branchId: req.user.branchId })
-      .sort({ company: 1, name: 1 });
+    const branchId = resolveBranchId(req);
+
+    // ✅ FIX: branchId null ho (admin, no filter) toh sab aaye
+    const query = branchId ? { branchId } : {};
+
+    const drinks = await ColdDrink.find(query).sort({ company: 1, name: 1 });
     res.json({ success: true, coldDrinks: drinks, count: drinks.length });
   } catch (e) {
+    console.error('getAllColdDrinks error:', e);
     res.status(500).json({ success: false, message: e.message });
   }
 };
 
-// ── CREATE new cold drink ─────────────────────────────────────────────────
+// ── CREATE ────────────────────────────────────────────────────────────────────
 exports.createColdDrink = async (req, res) => {
   try {
     const drink = await ColdDrink.create({
@@ -20,11 +34,12 @@ exports.createColdDrink = async (req, res) => {
     });
     res.status(201).json({ success: true, coldDrink: drink });
   } catch (e) {
+    console.error('createColdDrink error:', e);
     res.status(500).json({ success: false, message: e.message });
   }
 };
 
-// ── UPDATE cold drink (name, company, notes, isActive) ──────────────────
+// ── UPDATE ────────────────────────────────────────────────────────────────────
 exports.updateColdDrink = async (req, res) => {
   try {
     const drink = await ColdDrink.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -35,7 +50,7 @@ exports.updateColdDrink = async (req, res) => {
   }
 };
 
-// ── DELETE cold drink ────────────────────────────────────────────────────
+// ── DELETE ────────────────────────────────────────────────────────────────────
 exports.deleteColdDrink = async (req, res) => {
   try {
     await ColdDrink.findByIdAndDelete(req.params.id);
@@ -45,16 +60,14 @@ exports.deleteColdDrink = async (req, res) => {
   }
 };
 
-// ── ADD a new size to existing drink ─────────────────────────────────────
+// ── ADD SIZE ──────────────────────────────────────────────────────────────────
 exports.addSize = async (req, res) => {
   try {
-    // req.body: { size, purchasePrice, salePrice, currentStock, minimumStock, expiryDate }
     const drink = await ColdDrink.findById(req.params.id);
     if (!drink) return res.status(404).json({ success: false, message: 'Not found' });
 
-    // Prevent duplicate size
     const exists = drink.sizes.find(s => s.size === req.body.size);
-    if (exists) return res.status(400).json({ success: false, message: 'This size already exists for this drink' });
+    if (exists) return res.status(400).json({ success: false, message: 'This size already exists' });
 
     drink.sizes.push(req.body);
     await drink.save();
@@ -64,7 +77,7 @@ exports.addSize = async (req, res) => {
   }
 };
 
-// ── UPDATE a specific size ────────────────────────────────────────────────
+// ── UPDATE SIZE ───────────────────────────────────────────────────────────────
 exports.updateSize = async (req, res) => {
   try {
     const drink = await ColdDrink.findById(req.params.id);
@@ -81,7 +94,7 @@ exports.updateSize = async (req, res) => {
   }
 };
 
-// ── RESTOCK a specific size ───────────────────────────────────────────────
+// ── RESTOCK SIZE ──────────────────────────────────────────────────────────────
 exports.restockSize = async (req, res) => {
   try {
     const { quantity, purchasePrice, expiryDate } = req.body;
@@ -92,8 +105,8 @@ exports.restockSize = async (req, res) => {
     if (!variant) return res.status(404).json({ success: false, message: 'Size not found' });
 
     variant.currentStock += parseInt(quantity) || 0;
-    if (purchasePrice)  variant.purchasePrice = parseFloat(purchasePrice);
-    if (expiryDate)     variant.expiryDate    = new Date(expiryDate);
+    if (purchasePrice) variant.purchasePrice = parseFloat(purchasePrice);
+    if (expiryDate)    variant.expiryDate    = new Date(expiryDate);
 
     await drink.save();
     res.json({ success: true, coldDrink: drink, message: `Restocked +${quantity}` });
@@ -102,7 +115,7 @@ exports.restockSize = async (req, res) => {
   }
 };
 
-// ── DELETE a size ─────────────────────────────────────────────────────────
+// ── DELETE SIZE ───────────────────────────────────────────────────────────────
 exports.deleteSize = async (req, res) => {
   try {
     const drink = await ColdDrink.findById(req.params.id);
@@ -116,16 +129,15 @@ exports.deleteSize = async (req, res) => {
   }
 };
 
-// ── GET all (for mobile API — public-style, used by mobile app) ───────────
-// Mobile app will call this to build its own menu
+// ── MOBILE API ────────────────────────────────────────────────────────────────
 exports.getColdDrinksForMobile = async (req, res) => {
   try {
     const branchId = req.query.branchId || req.user?.branchId;
     const now = new Date();
 
-    const drinks = await ColdDrink.find({ branchId, isActive: true }).sort({ company: 1, name: 1 });
+    const query = branchId ? { branchId, isActive: true } : { isActive: true };
+    const drinks = await ColdDrink.find(query).sort({ company: 1, name: 1 });
 
-    // Flatten to mobile-friendly format: one entry per drink with its sizes
     const result = drinks.map(d => ({
       _id:     d._id,
       name:    d.name,
@@ -138,7 +150,7 @@ exports.getColdDrinksForMobile = async (req, res) => {
           salePrice: s.salePrice,
           stock:     s.currentStock,
         })),
-    })).filter(d => d.sizes.length > 0); // only drinks with at least one available size
+    })).filter(d => d.sizes.length > 0);
 
     res.json({ success: true, coldDrinks: result });
   } catch (e) {

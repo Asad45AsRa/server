@@ -7,15 +7,38 @@ require('dotenv').config();
 
 const seedDatabase = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://ahmad556sahib_db_user:d8NrZTEYycMEb3IU@cluster0.lk13axb.mongodb.net/restaurant_management?retryWrites=true&w=majority');
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://granasahib379_db_user:zdaJHY9i8At00Bta@cluster0.otfqs7z.mongodb.net/restaurant_management?retryWrites=true&w=majority&appName=Cluster0');
     console.log('✅ MongoDB Connected');
 
-    console.log('\n🗑️  Clearing existing data...');
-    await User.deleteMany({});
-    await Branch.deleteMany({});
-    console.log('✅ Old data cleared');
+    // ============================================================
+    // 🛡️ GUARD: Agar data pehle se exist karta hai toh seed mat karo
+    // ============================================================
+    const existingAdmin = await User.findOne({ role: 'admin' });
+    if (existingAdmin) {
+      console.log('\n' + '='.repeat(60));
+      console.log('⚠️  DATABASE ALREADY SEEDED — SKIPPING');
+      console.log('='.repeat(60));
+      console.log('\n   Admin already exists:', existingAdmin.email);
+      console.log('   Data safe hai, kuch delete nahi hua.');
+      console.log('\n   Force re-seed karna ho toh:');
+      console.log('   node seedDatabase.js --force');
+      console.log('='.repeat(60) + '\n');
+      process.exit(0);
+      return;
+    }
 
-    // ─── Single Branch ───────────────────────────────────────────────────────
+    // ============================================================
+    // Force flag: node seedDatabase.js --force
+    // ============================================================
+    const forceReseed = process.argv.includes('--force');
+    if (forceReseed) {
+      console.log('\n⚠️  --force flag — Purана data delete ho raha hai...');
+      await User.deleteMany({});
+      await Branch.deleteMany({});
+      console.log('✅ Old data cleared');
+    }
+
+    // ─── Single Branch ────────────────────────────────────────────────────────
     console.log('\n🏢 Creating branch...');
     const branches = await Branch.insertMany([
       {
@@ -37,7 +60,7 @@ const seedDatabase = async () => {
     console.log('\n👥 Creating users...');
     const users = await User.create([
 
-      // ── Admin ────────────────────────────────────────────────────────────
+      // ── Admin ─────────────────────────────────────────────────────────────
       {
         name: 'Admin',
         email: 'admin@almadina.com',
@@ -53,26 +76,26 @@ const seedDatabase = async () => {
         leavesPerMonth: 3,
       },
 
-      // ── Manager — 3 placeholder seats (no real names) ────────────────────
+      // ── Manager — 3 placeholder seats ─────────────────────────────────────
       { name: 'Manager Seat 1', email: 'manager1@almadina.com', password: hashedPassword, role: 'manager', phone: '03010000001', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 60000, leavesPerMonth: 3, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Manager Seat 2', email: 'manager2@almadina.com', password: hashedPassword, role: 'manager', phone: '03010000002', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 60000, leavesPerMonth: 3, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Manager Seat 3', email: 'manager3@almadina.com', password: hashedPassword, role: 'manager', phone: '03010000003', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 60000, leavesPerMonth: 3, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── HR — 3 placeholder seats ─────────────────────────────────────────
+      // ── HR — 3 placeholder seats ───────────────────────────────────────────
       { name: 'HR Seat 1', email: 'hr1@almadina.com', password: hashedPassword, role: 'hr', phone: '03020000001', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 45000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'HR Seat 2', email: 'hr2@almadina.com', password: hashedPassword, role: 'hr', phone: '03020000002', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 45000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'HR Seat 3', email: 'hr3@almadina.com', password: hashedPassword, role: 'hr', phone: '03020000003', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 45000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── Inventory Officer — 3 placeholder seats ──────────────────────────
+      // ── Inventory Officer — 3 placeholder seats ────────────────────────────
       { name: 'Inventory Seat 1', email: 'inventory1@almadina.com', password: hashedPassword, role: 'inventory_officer', phone: '03030000001', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 40000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Inventory Seat 2', email: 'inventory2@almadina.com', password: hashedPassword, role: 'inventory_officer', phone: '03030000002', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 40000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Inventory Seat 3', email: 'inventory3@almadina.com', password: hashedPassword, role: 'inventory_officer', phone: '03030000003', address: 'Shahkot', branchId: branch, wageType: 'monthly', monthlyRate: 40000, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── Cashiers (hourly) ────────────────────────────────────────────────
+      // ── Cashiers (hourly) ──────────────────────────────────────────────────
       { name: 'Waqas',   email: 'cashier.waqas@almadina.com',   password: hashedPassword, role: 'cashier', phone: '03040000001', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 300, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Mustafa', email: 'cashier.mustafa@almadina.com', password: hashedPassword, role: 'cashier', phone: '03040000002', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 300, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── Chefs (daily) ────────────────────────────────────────────────────
+      // ── Chefs (daily) ──────────────────────────────────────────────────────
       { name: 'Ali Hamza', email: 'chef.alihamza@almadina.com', password: hashedPassword, role: 'chef', phone: '03050000001', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 2500, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Waqar',     email: 'chef.waqar@almadina.com',    password: hashedPassword, role: 'chef', phone: '03050000002', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 2500, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Muzam',     email: 'chef.muzam@almadina.com',    password: hashedPassword, role: 'chef', phone: '03050000003', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 2500, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
@@ -80,7 +103,7 @@ const seedDatabase = async () => {
       { name: 'Umar Chef', email: 'chef.umar@almadina.com',     password: hashedPassword, role: 'chef', phone: '03050000005', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 2500, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Moshin',    email: 'chef.moshin@almadina.com',   password: hashedPassword, role: 'chef', phone: '03050000006', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 2500, leavesPerMonth: 2, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── Waiters (hourly) ─────────────────────────────────────────────────
+      // ── Waiters (hourly) ───────────────────────────────────────────────────
       { name: 'Samar Qamar', email: 'waiter.samarqamar@almadina.com', password: hashedPassword, role: 'waiter', phone: '03060000001', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 200, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Shoaib',      email: 'waiter.shoaib@almadina.com',     password: hashedPassword, role: 'waiter', phone: '03060000002', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 200, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Abdullah',    email: 'waiter.abdullah@almadina.com',   password: hashedPassword, role: 'waiter', phone: '03060000003', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 200, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
@@ -88,11 +111,10 @@ const seedDatabase = async () => {
       { name: 'Hasnain',     email: 'waiter.hasnain@almadina.com',    password: hashedPassword, role: 'waiter', phone: '03060000005', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 200, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Rafiq',       email: 'waiter.rafiq@almadina.com',      password: hashedPassword, role: 'waiter', phone: '03060000006', address: 'Shahkot', branchId: branch, wageType: 'hourly', hourlyRate: 200, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
 
-      // ── Delivery Boys (daily) ────────────────────────────────────────────
+      // ── Delivery Boys (daily) ──────────────────────────────────────────────
       { name: 'Umir',   email: 'delivery.umir@almadina.com',   password: hashedPassword, role: 'delivery', phone: '03070000001', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 1500, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Zahid',  email: 'delivery.zahid@almadina.com',  password: hashedPassword, role: 'delivery', phone: '03070000002', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 1500, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
       { name: 'Khaliq', email: 'delivery.khaliq@almadina.com', password: hashedPassword, role: 'delivery', phone: '03070000003', address: 'Shahkot', branchId: branch, wageType: 'daily', dailyRate: 1500, leavesPerMonth: 1, isActive: true, isApproved: true, joinDate: new Date() },
-
     ]);
     console.log(`✅ Created ${users.length} users`);
 
@@ -110,7 +132,7 @@ const seedDatabase = async () => {
     console.log(`   Branch  : AlMadina Fast Food - Shahkot`);
     console.log(`   Users   : ${users.length}`);
     console.log('\n🔑 DEFAULT PASSWORD FOR ALL USERS: password123');
-    console.log('\n📧 PLACEHOLDER SEAT EMAILS (no real names):');
+    console.log('\n📧 PLACEHOLDER SEAT EMAILS:');
     console.log('   Manager  → manager1@almadina.com / manager2 / manager3');
     console.log('   HR       → hr1@almadina.com / hr2 / hr3');
     console.log('   Inventory→ inventory1@almadina.com / inventory2 / inventory3');

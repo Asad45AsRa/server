@@ -6,64 +6,46 @@ const Table = require('../models/Table');
 const Inventory = require('../models/Inventory');
 const { PaymentStatus } = require('../config/constants');
 
+const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
+
 // ========== INVENTORY DEDUCTION HELPER ==========
-// Yeh function chef ke order accept karne par call hogi
-// Cashier ko yeh show nahi hogi - backend mein quietly chalta hai
 
 const deductInventoryForOrder = async (order) => {
   try {
     for (const item of order.items) {
-      // item.itemId could be a Product or Deal
-      let product = null;
-
-      // Try to find as product first
-      product = await Product.findById(item.itemId)
+      let product = await Product.findById(item.itemId)
         .populate('sizes.ingredients.inventoryItemId');
 
       if (product) {
-        // Find matching size
         const sizeData = product.sizes.find(
           s => s.size.toLowerCase() === (item.size || 'medium').toLowerCase()
         );
-
         if (sizeData && sizeData.ingredients && sizeData.ingredients.length > 0) {
           for (const ingredient of sizeData.ingredients) {
             const deductQty = ingredient.quantity * (item.quantity || 1);
-
             await Inventory.findByIdAndUpdate(
               ingredient.inventoryItemId._id || ingredient.inventoryItemId,
-              {
-                $inc: { currentStock: -deductQty }
-              }
-            );
-
-            console.log(
-              `Inventory deducted: ${ingredient.inventoryItemId.name || ingredient.inventoryItemId} - ${deductQty} units`
+              { $inc: { currentStock: -deductQty } }
             );
           }
         }
       }
 
-      // If item is from a deal
-      const deal = await Deal.findById(item.itemId)
-        .populate({
-          path: 'products.productId',
-          populate: { path: 'sizes.ingredients.inventoryItemId' }
-        });
+      const deal = await Deal.findById(item.itemId).populate({
+        path: 'products.productId',
+        populate: { path: 'sizes.ingredients.inventoryItemId' }
+      });
 
       if (deal) {
         for (const dealProduct of deal.products) {
           const prod = dealProduct.productId;
           if (!prod) continue;
-
           const sizeData = prod.sizes.find(
             s => s.size.toLowerCase() === (dealProduct.size || 'medium').toLowerCase()
           );
-
           if (sizeData && sizeData.ingredients) {
             for (const ingredient of sizeData.ingredients) {
               const deductQty = ingredient.quantity * (dealProduct.quantity || 1) * (item.quantity || 1);
-
               await Inventory.findByIdAndUpdate(
                 ingredient.inventoryItemId._id || ingredient.inventoryItemId,
                 { $inc: { currentStock: -deductQty } }
@@ -75,11 +57,9 @@ const deductInventoryForOrder = async (order) => {
     }
   } catch (error) {
     console.error('Inventory deduction error (non-fatal):', error);
-    // Non-fatal - order still proceeds even if deduction fails
   }
 };
 
-// Export so chef/order controller can also use it
 exports.deductInventoryForOrder = deductInventoryForOrder;
 
 // ========== ORDERS ==========
@@ -88,9 +68,10 @@ exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
 
+    // ✅ 'returned' add kiya — delivery boy wapas aaya, cashier payment verify karega
     const orders = await Order.find({
       branchId,
-      status: { $in: ['pending', 'accepted', 'preparing', 'ready'] }
+      status: { $in: ['pending', 'accepted', 'preparing', 'ready', 'delivered', 'returned'] }
     })
       .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
@@ -150,7 +131,9 @@ exports.receivePayment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    const changeAmount = receivedAmount ? receivedAmount - amount : 0;
+    // ✅ FIX: delivery 'returned' orders ke liye cashReceived use karo agar receivedAmount nahi
+    const finalReceivedAmount = receivedAmount || order.cashReceived || amount;
+    const changeAmount = finalReceivedAmount ? finalReceivedAmount - amount : 0;
 
     const payment = await Payment.create({
       orderId,
@@ -161,20 +144,18 @@ exports.receivePayment = async (req, res) => {
       cashierId: req.user._id,
       waiterId: order.waiterId,
       deliveryBoyId: order.deliveryBoyId,
-      receivedAmount,
+      receivedAmount: finalReceivedAmount,
       changeAmount,
       transactionId,
       notes,
       paidAt: new Date()
     });
 
-    // Update order status
     order.status = 'completed';
     order.completedAt = new Date();
     order.cashierId = req.user._id;
     await order.save();
 
-    // Free up table if dine-in
     if (order.tableNumber) {
       await Table.findOneAndUpdate(
         { branchId: req.user.branchId, tableNumber: order.tableNumber },
@@ -182,7 +163,6 @@ exports.receivePayment = async (req, res) => {
       );
     }
 
-    // Populate payment for slip
     const populatedPayment = await Payment.findById(payment._id)
       .populate('cashierId', 'name')
       .populate('waiterId', 'name')
@@ -208,6 +188,11 @@ const buildSlipData = (order, payment) => {
     orderNumber: order.orderNumber,
     orderType: order.orderType,
     tableNumber: order.tableNumber,
+    // ✅ Delivery info slip mein bhi show hoga
+    customerName: order.customerName || null,
+    deliveryAddress: order.deliveryAddress || null,
+    deliveryBoy: payment.deliveryBoyId?.name || null,
+    distanceTravelled: order.distanceTravelled || null,
     items: order.items.map(item => ({
       name: item.itemId?.name || item.name || 'Item',
       size: item.size,
@@ -225,7 +210,7 @@ const buildSlipData = (order, payment) => {
     cashier: payment.cashierId?.name || 'Cashier',
     waiter: payment.waiterId?.name || null,
     paidAt: payment.paidAt,
-    branchName: order.branchId?.name || 'Restaurant'
+    branchName: BRANCH_NAME,
   };
 };
 
@@ -234,6 +219,7 @@ exports.getPaymentSlip = async (req, res) => {
     const payment = await Payment.findById(req.params.id)
       .populate('cashierId', 'name')
       .populate('waiterId', 'name')
+      .populate('deliveryBoyId', 'name')
       .populate({
         path: 'orderId',
         populate: [
@@ -297,7 +283,6 @@ exports.getHourlyIncomeReport = async (req, res) => {
     const branchId = req.user.branchId;
     const { date } = req.query;
 
-    // Default to today
     const reportDate = date ? new Date(date) : new Date();
     const startOfDay = new Date(reportDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -309,7 +294,6 @@ exports.getHourlyIncomeReport = async (req, res) => {
       paidAt: { $gte: startOfDay, $lte: endOfDay }
     }).populate('orderId', 'orderType orderNumber');
 
-    // Group by hour
     const hourlyData = {};
     for (let h = 0; h < 24; h++) {
       hourlyData[h] = {
@@ -357,9 +341,7 @@ exports.getHourlyIncomeReport = async (req, res) => {
   }
 };
 
-// ========== ORDER STATUS UPDATE (for chef to call deduction) ==========
-// Yeh route chef controller mein bhi honi chahiye
-// Jab bhi order status 'accepted' ho, inventory deduct ho
+// ========== ORDER STATUS UPDATE ==========
 
 exports.updateOrderStatus = async (req, res) => {
   try {
@@ -373,13 +355,11 @@ exports.updateOrderStatus = async (req, res) => {
     const previousStatus = order.status;
     order.status = status;
 
-    // Jab chef accept kare - inventory deduct karo (cashier ko show nahi hoga)
     if (status === 'accepted' && previousStatus === 'pending') {
       await deductInventoryForOrder(order);
     }
 
     await order.save();
-
     res.json({ success: true, order, message: `Order status updated to ${status}` });
   } catch (error) {
     console.error('Update order status error:', error);
@@ -391,24 +371,13 @@ exports.updateOrderStatus = async (req, res) => {
 
 exports.createProduct = async (req, res) => {
   try {
-    const productData = {
-      ...req.body,
-      branchId: req.user.branchId,
-      createdBy: req.user._id
-    };
-
+    const productData = { ...req.body, branchId: req.user.branchId, createdBy: req.user._id };
     const product = await Product.create(productData);
-
     const populatedProduct = await Product.findById(product._id)
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit');
-
-    res.status(201).json({
-      success: true,
-      product: populatedProduct,
-      message: 'Product created successfully'
-    });
+    res.status(201).json({ success: true, product: populatedProduct, message: 'Product created successfully' });
   } catch (error) {
     console.error('Create product error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -421,11 +390,7 @@ exports.updateProduct = async (req, res) => {
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit');
-
-    if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     res.json({ success: true, product, message: 'Product updated successfully' });
   } catch (error) {
     console.error('Update product error:', error);
@@ -436,13 +401,11 @@ exports.updateProduct = async (req, res) => {
 exports.getProducts = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-
     const products = await Product.find({ branchId })
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
       .sort({ createdAt: -1 });
-
     res.json({ success: true, products, count: products.length });
   } catch (error) {
     console.error('Get products error:', error);
@@ -454,14 +417,30 @@ exports.getProducts = async (req, res) => {
 
 exports.createDeal = async (req, res) => {
   try {
+    const { products, ...rest } = req.body;
+
+    const cleanedProducts = (products || []).map(item => {
+      const cleaned = {
+        itemType: item.itemType || 'product',
+        size: item.size,
+        quantity: parseInt(item.quantity) || 1,
+      };
+      if (item.itemType === 'cold_drink') {
+        if (item.coldDrinkId) cleaned.coldDrinkId = item.coldDrinkId;
+      } else {
+        if (item.productId) cleaned.productId = item.productId;
+      }
+      return cleaned;
+    });
+
     const dealData = {
-      ...req.body,
+      ...rest,
+      products: cleanedProducts,
       branchId: req.user.branchId,
-      createdBy: req.user._id
+      createdBy: req.user._id,
     };
 
     const deal = await Deal.create(dealData);
-
     const populatedDeal = await Deal.findById(deal._id)
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
@@ -476,15 +455,32 @@ exports.createDeal = async (req, res) => {
 
 exports.updateDeal = async (req, res) => {
   try {
-    const deal = await Deal.findByIdAndUpdate(req.params.id, req.body, { new: true })
+    const { products, ...rest } = req.body;
+
+    const cleanedProducts = (products || []).map(item => {
+      const cleaned = {
+        itemType: item.itemType || 'product',
+        size: item.size,
+        quantity: parseInt(item.quantity) || 1,
+      };
+      if (item.itemType === 'cold_drink') {
+        if (item.coldDrinkId) cleaned.coldDrinkId = item.coldDrinkId;
+      } else {
+        if (item.productId) cleaned.productId = item.productId;
+      }
+      return cleaned;
+    });
+
+    const deal = await Deal.findByIdAndUpdate(
+      req.params.id,
+      { ...rest, products: cleanedProducts },
+      { new: true }
+    )
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('products.productId', 'name image');
 
-    if (!deal) {
-      return res.status(404).json({ success: false, message: 'Deal not found' });
-    }
-
+    if (!deal) return res.status(404).json({ success: false, message: 'Deal not found' });
     res.json({ success: true, deal, message: 'Deal updated successfully' });
   } catch (error) {
     console.error('Update deal error:', error);
@@ -495,13 +491,11 @@ exports.updateDeal = async (req, res) => {
 exports.getDeals = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-
     const deals = await Deal.find({ branchId })
       .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('products.productId', 'name image')
       .sort({ createdAt: -1 });
-
     res.json({ success: true, deals, count: deals.length });
   } catch (error) {
     console.error('Get deals error:', error);
@@ -514,7 +508,6 @@ exports.getDeals = async (req, res) => {
 exports.getTables = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-
     const tables = await Table.find({ branchId })
       .populate({
         path: 'currentOrderId',
@@ -522,7 +515,6 @@ exports.getTables = async (req, res) => {
         populate: { path: 'waiterId', select: 'name' }
       })
       .sort({ tableNumber: 1 });
-
     res.json({ success: true, tables, count: tables.length });
   } catch (error) {
     console.error('Get tables error:', error);
@@ -533,20 +525,13 @@ exports.getTables = async (req, res) => {
 exports.createTable = async (req, res) => {
   try {
     const { tableNumber, capacity } = req.body;
-
     const existingTable = await Table.findOne({ branchId: req.user.branchId, tableNumber });
     if (existingTable) {
       return res.status(400).json({ success: false, message: 'Table number already exists' });
     }
-
     const table = await Table.create({
-      tableNumber,
-      capacity,
-      branchId: req.user.branchId,
-      isOccupied: false,
-      isActive: true
+      tableNumber, capacity, branchId: req.user.branchId, isOccupied: false, isActive: true
     });
-
     res.status(201).json({ success: true, table, message: 'Table created successfully' });
   } catch (error) {
     console.error('Create table error:', error);
@@ -574,6 +559,51 @@ exports.deleteTable = async (req, res) => {
   }
 };
 
+// ========== SEED TABLES (30 per floor) ==========
+
+exports.seedTables = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const floors = ['ground_floor', 'first_floor', 'second_floor', 'outdoor'];
+    const TABLES_PER_FLOOR = 30;
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const floor of floors) {
+      for (let tableNum = 1; tableNum <= TABLES_PER_FLOOR; tableNum++) {
+        const existing = await Table.findOne({ branchId, tableNumber: tableNum, floor });
+        if (!existing) {
+          await Table.create({
+            tableNumber: tableNum,
+            capacity: 4,
+            floor,
+            branchId,
+            isActive: true,
+            isOccupied: false,
+          });
+          created++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Tables seeded! Created: ${created}, Already existed: ${skipped}`,
+      total: floors.length * TABLES_PER_FLOOR,
+      created,
+      skipped,
+    });
+  } catch (error) {
+    console.error('Seed tables error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== COLD DRINKS (legacy - cashier view) ==========
+
 exports.getColdDrinks = async (req, res) => {
   try {
     const coldDrinks = await Inventory.find({
@@ -582,19 +612,6 @@ exports.getColdDrinks = async (req, res) => {
       isActive: true
     }).sort({ name: 1 });
     res.json({ success: true, coldDrinks, count: coldDrinks.length });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.createColdDrink = async (req, res) => {
-  try {
-    const coldDrink = await Inventory.create({
-      ...req.body,
-      branchId: req.user.branchId,
-      category: 'cold_drinks'
-    });
-    res.status(201).json({ success: true, coldDrink, message: 'Cold drink added to inventory' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

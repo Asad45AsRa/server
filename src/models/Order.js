@@ -22,8 +22,6 @@ const orderSchema = new mongoose.Schema({
     preparationTime: { type: Number, default: 0 }
   }],
 
-
-
   subtotal: { type: Number, required: true },
   tax: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
@@ -46,11 +44,19 @@ const orderSchema = new mongoose.Schema({
 
   notes: { type: String },
 
-  acceptedAt: { type: Date },
-  preparingAt: { type: Date },
-  readyAt: { type: Date },
-  deliveredAt: { type: Date },
-  completedAt: { type: Date }
+  // ✅ Delivery meter tracking fields
+  startMeterReading:  { type: Number },   // km reading before departure
+  endMeterReading:    { type: Number },   // km reading after return
+  distanceTravelled:  { type: Number },   // endMeter - startMeter
+  cashReceived:       { type: Number },   // cash collected from customer
+
+  // Timestamps
+  acceptedAt:   { type: Date },
+  preparingAt:  { type: Date },
+  readyAt:      { type: Date },
+  departedAt:   { type: Date },  
+  deliveredAt:  { type: Date },
+  completedAt:  { type: Date }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -4,9 +4,14 @@ const dealSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: { type: String },
   products: [{
-    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    // Product item (optional - only for product type)
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    // Cold drink item (optional - only for cold_drink type)
+    coldDrinkId: { type: mongoose.Schema.Types.ObjectId, ref: 'ColdDrink' },
+    // Item type discriminator
+    itemType: { type: String, enum: ['product', 'cold_drink'], default: 'product' },
     size: { type: String, required: true },
-    quantity: { type: Number, required: true }
+    quantity: { type: Number, required: true, min: 1 }
   }],
   originalPrice: { type: Number, required: true },
   discountedPrice: { type: Number, required: true },

@@ -14,6 +14,7 @@ const OrderStatus = {
   ACCEPTED: 'accepted',
   PREPARING: 'preparing',
   READY: 'ready',
+  OUT_FOR_DELIVERY: 'out_for_delivery',   // ✅ ADDED — fixes enum validation error
   DELIVERED: 'delivered',
   COMPLETED: 'completed',
   CANCELLED: 'cancelled'

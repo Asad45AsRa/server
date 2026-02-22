@@ -158,7 +158,9 @@ exports.getAllUsers = async (req, res) => {
 exports.approveUser = async (req, res) => {
   try {
     const user = await User.findByIdAndUpdate(
-      req.params.id, { isApproved: true, approvedBy: req.user._id }, { new: true }
+      req.params.id,
+      { isApproved: true, approvedBy: req.user._id },
+      { new: true }
     ).select('-password');
     res.json({ success: true, user });
   } catch (error) {
@@ -178,20 +180,31 @@ exports.updateUserRole = async (req, res) => {
   }
 };
 
+// ✅ FIXED: resetUserPassword
+// Bug was: manually hashing + findByIdAndUpdate could cause double-hash
+// if User model also has pre('findOneAndUpdate') hook.
+// Fix: use findById + user.save() so pre('save') hook handles hashing correctly.
 exports.resetUserPassword = async (req, res) => {
   try {
     const { newPassword } = req.body;
     if (!newPassword || newPassword.length < 6) {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-    const user = await User.findByIdAndUpdate(
-      req.params.id, { password: hashedPassword }, { new: true }
-    ).select('-password');
+
+    const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    res.json({ success: true, message: `Password reset successfully for ${user.name}`, user });
+
+    // Set plain-text password — pre('save') hook in User model will hash it
+    user.password = newPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Password reset successfully for ${user.name}`,
+      user: { _id: user._id, name: user.name, email: user.email, role: user.role }
+    });
   } catch (error) {
+    console.error('resetUserPassword Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -202,24 +215,19 @@ const DEFAULT_RIGHTS = {
   products: false, deals: false, reports: false, hr: false, fullControl: false
 };
 
-// ✅ GET Manager Rights - works even if managerRights field doesn't exist yet
 exports.getManagerRights = async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
       .select('name email role managerRights branchId')
       .populate('branchId', 'name city');
 
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // ✅ Safely merge - handles missing/null managerRights field
     let managerRights = { ...DEFAULT_RIGHTS };
     if (user.managerRights) {
       const raw = typeof user.managerRights.toObject === 'function'
         ? user.managerRights.toObject()
         : user.managerRights;
-      // Remove Mongoose internal fields
       const { _id, __v, ...cleanRights } = raw;
       managerRights = { ...DEFAULT_RIGHTS, ...cleanRights };
     }
@@ -227,12 +235,8 @@ exports.getManagerRights = async (req, res) => {
     res.json({
       success: true,
       user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        branchId: user.branchId,
-        managerRights
+        _id: user._id, name: user.name, email: user.email,
+        role: user.role, branchId: user.branchId, managerRights
       }
     });
   } catch (error) {
@@ -241,7 +245,6 @@ exports.getManagerRights = async (req, res) => {
   }
 };
 
-// ✅ ASSIGN Manager Rights
 exports.assignManagerRights = async (req, res) => {
   try {
     const { userId, rights } = req.body;
@@ -251,10 +254,7 @@ exports.assignManagerRights = async (req, res) => {
     const targetUser = await User.findById(userId);
     if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Build resolved rights
     let resolvedRights = { ...DEFAULT_RIGHTS, ...rights };
-
-    // fullControl overrides everything
     if (rights.fullControl) {
       resolvedRights = {
         orders: true, parcel: true, staff: true, inventory: true,
@@ -262,19 +262,13 @@ exports.assignManagerRights = async (req, res) => {
       };
     }
 
-    // ✅ Use $set to safely update nested field
     const user = await User.findByIdAndUpdate(
       userId,
       { $set: { managerRights: resolvedRights } },
       { new: true, runValidators: false }
     ).select('-password').populate('branchId', 'name');
 
-    res.json({
-      success: true,
-      message: `Rights updated for ${user.name}`,
-      user,
-      assignedRights: resolvedRights
-    });
+    res.json({ success: true, message: `Rights updated for ${user.name}`, user, assignedRights: resolvedRights });
   } catch (error) {
     console.error('assignManagerRights Error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -310,7 +304,6 @@ exports.getWorkerStats = async (req, res) => {
 
     const salary = await Salary.findOne({ userId, month: parseInt(month), year: parseInt(year) });
 
-    // Safe managerRights for response
     let managerRights = null;
     if (user.role === 'manager') {
       managerRights = user.managerRights
