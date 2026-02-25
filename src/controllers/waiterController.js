@@ -129,6 +129,7 @@ exports.getTables = async (req, res) => {
 
 // ========== CREATE ORDER ==========
 // Supports: dine_in, takeaway, delivery
+// ✅ NEW: Agar delivery order mein deliveryBoyId nahi → sab delivery boys ko broadcast karo
 
 exports.createOrder = async (req, res) => {
   try {
@@ -210,9 +211,6 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    // ── ✅ KEY FIX: Do NOT set floor/tableNumber for non-dine_in ──────────
-    // Setting them to null causes Mongoose enum validation error.
-    // Instead, simply omit them from the document.
     const orderData = {
       orderNumber: generateOrderNumber(),
       branchId:    req.user.branchId,
@@ -240,6 +238,7 @@ exports.createOrder = async (req, res) => {
     // Extra delivery fields
     if (orderType === 'delivery') {
       orderData.deliveryAddress = deliveryAddress;
+      // ✅ Agar deliveryBoyId hai → assign karo; nahi hai → unassigned broadcast hoga
       if (deliveryBoyId) orderData.deliveryBoyId = deliveryBoyId;
     }
 
@@ -275,6 +274,23 @@ exports.createOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name phone')
       .populate('items.itemId',  'name image');
 
+    // ✅ NEW: Delivery order + deliveryBoyId nahi → tamam delivery boys ko broadcast
+    if (orderType === 'delivery' && !deliveryBoyId) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`branch-${req.user.branchId}`).emit('new-unassigned-delivery', {
+          orderId:         String(populatedOrder._id),
+          orderNumber:     populatedOrder.orderNumber,
+          customerName:    customerName,
+          deliveryAddress: deliveryAddress,
+          total:           total,
+          itemCount:       processedItems.length,
+          createdAt:       populatedOrder.createdAt,
+        });
+        console.log(`[Broadcast] Unassigned delivery ${populatedOrder.orderNumber} → branch-${req.user.branchId}`);
+      }
+    }
+
     res.status(201).json({
       success: true,
       order:   populatedOrder,
@@ -297,7 +313,6 @@ exports.getMyOrders = async (req, res) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
       query = { waiterId: req.user._id, createdAt: { $gte: sevenDaysAgo } };
     } else {
-      // Last 24h — includes completed/cancelled for history tab
       const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       query = { waiterId: req.user._id, createdAt: { $gte: oneDayAgo } };
     }
@@ -317,7 +332,6 @@ exports.getMyOrders = async (req, res) => {
 };
 
 // ========== UPDATE ORDER ==========
-// ✅ Allows pending, accepted, AND preparing statuses
 
 exports.updateOrder = async (req, res) => {
   try {
@@ -505,13 +519,11 @@ exports.requestPrint = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // ─── Waiter sirf apni order print request bhej sakta hai ───
     if (order.waiterId?._id?.toString() !== req.user._id.toString() &&
         order.waiterId?.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    // ─── Slip data build karo (cashier slip jaisa) ─────────────
     const slipData = {
       orderNumber:     order.orderNumber,
       orderType:       order.orderType,
@@ -537,15 +549,12 @@ exports.requestPrint = async (req, res) => {
       branchName: BRANCH_NAME_PRINT,
       createdAt:  order.createdAt,
       status:     order.status,
-      // Print request timestamp
       printRequestedAt: new Date(),
       printRequestedBy: req.user.name || 'Waiter',
     };
 
-    // ─── Socket.IO se desktop cashier ko emit karo ────────────
     const io = req.app.get('io');
     if (io) {
-      // Branch ke sab cashier desktops ko bhejo
       io.to(`branch-${order.branchId}`).emit('print-order', {
         orderId:     String(order._id),
         orderNumber: order.orderNumber,

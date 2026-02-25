@@ -2,12 +2,12 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Deal = require('../models/Deal');
 const Inventory = require('../models/Inventory');
-const ColdDrink = require('../models/Colddrink'); // ✅ Use same ColdDrink model as waiter
+const ColdDrink = require('../models/Colddrink');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
 
-// ─── Helper: map type string → itemType for Order schema ─────────────────────
+// ─── Helper ───────────────────────────────────────────────────────────────────
 const resolveItemType = (item) => {
-  if (item.itemType) return item.itemType; // already set on frontend
+  if (item.itemType) return item.itemType;
   if (item.type === 'cold_drink') return 'Inventory';
   if (item.type === 'deal') return 'Deal';
   return 'Product';
@@ -32,13 +32,8 @@ exports.getMenu = async (req, res) => {
       .populate('products.productId', 'name image')
       .lean();
 
-    // ✅ FIX: price field add karo takey frontend deal.price se access kar sake
-    const deals = rawDeals.map(d => ({
-      ...d,
-      price: d.discountedPrice,
-    }));
+    const deals = rawDeals.map(d => ({ ...d, price: d.discountedPrice }));
 
-    // ✅ Use ColdDrink model (same as waiter) — not raw Inventory
     const now = new Date();
     let coldDrinks = [];
     try {
@@ -51,16 +46,10 @@ exports.getMenu = async (req, res) => {
           category: 'cold_drinks',
           sizes: d.sizes
             .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
-            .map(s => ({
-              _id: s._id,
-              size: s.size,
-              price: s.salePrice,
-              currentStock: s.currentStock,
-            })),
+            .map(s => ({ _id: s._id, size: s.size, price: s.salePrice, currentStock: s.currentStock })),
         }))
         .filter(d => d.sizes.length > 0);
     } catch (e) {
-      // Fallback: old Inventory-based cold drinks if ColdDrink model not found
       const invDrinks = await Inventory.find({
         branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 }
       }).lean();
@@ -78,7 +67,7 @@ exports.getMenu = async (req, res) => {
   }
 };
 
-// ========== CREATE DELIVERY ORDER ==========
+// ========== CREATE DELIVERY ORDER (delivery boy khud banaye) ==========
 
 exports.createDeliveryOrder = async (req, res) => {
   try {
@@ -94,34 +83,10 @@ exports.createDeliveryOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order must have at least one item' });
     }
 
-    // ✅ FIX: ensure itemType is set on every item
-    const processedItems = items.map(item => ({
-      ...item,
-      itemType: resolveItemType(item),
-    }));
+    const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
 
-    // Inventory availability checks
     for (const item of processedItems) {
-      if (item.type === 'product') {
-        const product = await Product.findById(item.itemId)
-          .populate('sizes.ingredients.inventoryItemId');
-        if (!product) {
-          return res.status(404).json({ success: false, message: `Product not found: ${item.name}` });
-        }
-        const sizeData = product.sizes.find(s => s.size === item.size);
-        if (sizeData && sizeData.ingredients) {
-          for (const ingredient of sizeData.ingredients) {
-            const inventory = await Inventory.findById(ingredient.inventoryItemId);
-            const requiredQty = ingredient.quantity * item.quantity;
-            if (!inventory || inventory.currentStock < requiredQty) {
-              return res.status(400).json({
-                success: false,
-                message: `Insufficient stock for ${product.name}`
-              });
-            }
-          }
-        }
-      } else if (item.type === 'cold_drink') {
+      if (item.type === 'cold_drink') {
         try {
           const coldDrink = await ColdDrink.findOne({ 'sizes._id': item.itemId });
           if (coldDrink) {
@@ -143,22 +108,16 @@ exports.createDeliveryOrder = async (req, res) => {
     }
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
-    const estimatedTime = calculateTotalTime(processedItems) + 20; // +20 for delivery
+    const estimatedTime = calculateTotalTime(processedItems) + 20;
 
     const order = await Order.create({
       orderNumber: generateOrderNumber(),
       branchId: req.user.branchId,
       orderType: 'delivery',
       items: processedItems,
-      subtotal,
-      tax,
-      total,
-      estimatedTime,
+      subtotal, tax, total, estimatedTime,
       deliveryBoyId: req.user._id,
-      customerName,
-      customerPhone,
-      deliveryAddress,
-      notes,
+      customerName, customerPhone, deliveryAddress, notes,
       status: 'pending'
     });
 
@@ -197,6 +156,88 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
+// ========== ✅ NEW: GET UNASSIGNED ORDERS ==========
+// Branch ki tamam pending delivery orders jahan deliveryBoyId null ho
+
+exports.getUnassignedOrders = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+
+    const orders = await Order.find({
+      branchId,
+      orderType: 'delivery',
+      status: 'pending',
+      deliveryBoyId: null,
+    })
+      .populate('waiterId', 'name')
+      .populate('items.itemId', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ success: true, orders, count: orders.length });
+  } catch (error) {
+    console.error('Get unassigned orders error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== ✅ NEW: CLAIM ORDER ==========
+// Atomic update — pehle jo claim kare woh jeetay, race condition safe hai
+
+exports.claimOrder = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId is required' });
+    }
+
+    // findOneAndUpdate atomically checks aur update karta hai ek sath
+    const order = await Order.findOneAndUpdate(
+      {
+        _id: orderId,
+        orderType: 'delivery',
+        status: 'pending',
+        deliveryBoyId: null,          // sirf tab claim ho jab still unassigned ho
+        branchId: req.user.branchId,
+      },
+      { $set: { deliveryBoyId: req.user._id } },
+      { new: true }
+    )
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('items.itemId',  'name');
+
+    if (!order) {
+      return res.status(409).json({
+        success: false,
+        message: 'Yeh order pehle hi kisi aur ne claim kar li ya available nahi hai',
+      });
+    }
+
+    // Baki delivery boys ko socket se batao — list se hata do
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${req.user.branchId}`).emit('order-claimed', {
+        orderId:     String(order._id),
+        orderNumber: order.orderNumber,
+        claimedBy:   req.user.name || 'Delivery Boy',
+        claimedById: String(req.user._id),
+      });
+      console.log(`[Claim] Order ${order.orderNumber} claimed by ${req.user.name}`);
+    }
+
+    res.json({
+      success: true,
+      order,
+      message: `Order ${order.orderNumber} aapne claim kar li!`,
+    });
+  } catch (error) {
+    console.error('Claim order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // ========== UPDATE ORDER STATUS ==========
 
 exports.updateOrderStatus = async (req, res) => {
@@ -226,18 +267,14 @@ exports.updateOrderStatus = async (req, res) => {
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
 
-    res.json({
-      success: true,
-      order: populatedOrder,
-      message: `Order updated to ${status}`
-    });
+    res.json({ success: true, order: populatedOrder, message: `Order updated to ${status}` });
   } catch (error) {
     console.error('Update order status error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== COMPLETE DELIVERY (meter + cash — wapsi pay cashier verify karega) ==========
+// ========== COMPLETE DELIVERY ==========
 
 exports.completeDelivery = async (req, res) => {
   try {
@@ -264,15 +301,12 @@ exports.completeDelivery = async (req, res) => {
       });
     }
 
-    // ✅ FIX: 'completed' nahi, 'returned' set karo
-    // Delivery boy wapas aaya — cashier payment verify karega tab 'completed' hoga
     order.status = 'returned';
     order.endMeterReading = endMeterReading;
     order.cashReceived = cashReceived;
     order.distanceTravelled = distanceTravelled ||
       (order.startMeterReading ? endMeterReading - order.startMeterReading : 0);
     order.deliveredAt = new Date();
-    // ✅ completedAt cashier set karega receivePayment mein
 
     await order.save();
 
@@ -322,10 +356,7 @@ exports.updateOrder = async (req, res) => {
       if (items.length === 0) {
         return res.status(400).json({ success: false, message: 'Order must have at least one item' });
       }
-      const processedItems = items.map(item => ({
-        ...item,
-        itemType: resolveItemType(item),
-      }));
+      const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
       const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
       order.items = processedItems;
       order.subtotal = subtotal;
@@ -334,8 +365,8 @@ exports.updateOrder = async (req, res) => {
       order.estimatedTime = calculateTotalTime(processedItems) + 20;
     }
 
-    if (customerName) order.customerName = customerName;
-    if (customerPhone) order.customerPhone = customerPhone;
+    if (customerName)    order.customerName    = customerName;
+    if (customerPhone)   order.customerPhone   = customerPhone;
     if (deliveryAddress) order.deliveryAddress = deliveryAddress;
     if (notes !== undefined) order.notes = notes;
 
