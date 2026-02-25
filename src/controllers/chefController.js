@@ -2,12 +2,72 @@ const Order         = require('../models/Order');
 const Inventory     = require('../models/Inventory');
 const ChefInventory = require('../models/Chefinventory');
 const { InventoryRequest, InventoryTransaction } = require('../models/InventoryOfficer');
-const notificationService   = require('../services/notificationService');
+const notificationService    = require('../services/notificationService');
 const InventoryReturnRequest = require('../models/InventoryReturnRequest');
 
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+//  UNIT CONVERSION HELPER
+//  Inventory unit (kg/liter/pieces) ↔ Ingredient unit (g/ml/pieces etc.)
+// ══════════════════════════════════════════════════════════════════════════════
+const UNIT_TO_BASE = {
+  // Weight — base unit: kg
+  kg:          1,
+  half_kg:     0.5,
+  quarter_kg:  0.25,
+  g:           0.001,
+  gram:        0.001,
+  grams:       0.001,
+
+  // Volume — base unit: liter
+  liter:       1,
+  litre:       1,
+  l:           1,
+  half_liter:  0.5,
+  ml:          0.001,
+  milliliter:  0.001,
+  millilitre:  0.001,
+
+  // Count — base unit: pieces
+  pieces:      1,
+  piece:       1,
+  pcs:         1,
+  nos:         1,
+};
+
+/**
+ * Convert ingredient quantity to inventory unit.
+ * e.g. ingredient says 200 (g), inventory is in kg → returns 0.2
+ *
+ * @param {number}  ingredientQty  — quantity written on the product ingredient
+ * @param {string}  ingredientUnit — unit on the product ingredient (g, ml, pieces …)
+ * @param {string}  inventoryUnit  — unit of the inventory item (kg, liter, pieces …)
+ * @returns {number} quantity in inventory units
+ */
+const convertToInventoryUnit = (ingredientQty, ingredientUnit, inventoryUnit) => {
+  const qty = parseFloat(ingredientQty) || 0;
+  if (qty === 0) return 0;
+
+  const fromUnit = (ingredientUnit || '').toLowerCase().trim();
+  const toUnit   = (inventoryUnit  || '').toLowerCase().trim();
+
+  if (fromUnit === toUnit) return qty;   // same unit, no conversion
+
+  const fromBase = UNIT_TO_BASE[fromUnit];
+  const toBase   = UNIT_TO_BASE[toUnit];
+
+  if (!fromBase || !toBase) {
+    // Unknown unit — log and return as-is
+    console.warn(`[UnitConvert] Unknown units: ${fromUnit} → ${toUnit}. Returning qty as-is.`);
+    return qty;
+  }
+
+  // Convert: qty in fromUnit → base → toUnit
+  return (qty * fromBase) / toBase;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  ORDER MANAGEMENT
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
 
 exports.getPendingOrders = async (req, res) => {
   try {
@@ -69,11 +129,16 @@ exports.acceptOrder = async (req, res) => {
   }
 };
 
-// ── UPDATE ORDER STATUS ──────────────────────────────────────────────────────
-// Jab status === 'ready':
-//   1. Cold drink stock minus karo ColdDrink model se
-//   2. Product ingredients inventory se minus karo
-//   3. Chef ki aaj ki ChefInventory se bhi usedQuantity update karo
+// ══════════════════════════════════════════════════════════════════════════════
+//  UPDATE ORDER STATUS
+//
+//  When status → 'ready':
+//    1. Products: deduct ingredients FROM CHEF's personal ChefInventory
+//       (unit conversion handled: g→kg, ml→liter, etc.)
+//    2. Cold Drinks: deduct directly from ColdDrink model stock
+//    3. Main Inventory: NOT touched here — already reduced when items
+//       were issued to chef by inventory officer
+// ══════════════════════════════════════════════════════════════════════════════
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { orderId, status, additionalDelay } = req.body;
@@ -93,24 +158,28 @@ exports.updateOrderStatus = async (req, res) => {
     if (status === 'preparing') order.preparingAt = new Date();
 
     // ════════════════════════════════════════════════════════
-    //  READY — STOCK DEDUCTION
+    //  READY → DEDUCT STOCK
     // ════════════════════════════════════════════════════════
     if (status === 'ready' && !order.stockDeducted) {
       order.readyAt = new Date();
 
-      // Chef ki aaj ki inventory record (optional — usedQuantity update ke liye)
+      // Load chef's active ChefInventory for today
       const today    = new Date(); today.setHours(0, 0, 0, 0);
       const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
       const chefRecord = await ChefInventory.findOne({
         chefId: req.user._id,
         status: 'active',
         date: { $gte: today, $lt: tomorrow },
       });
 
+      // Track which chef-inventory items were modified
+      let chefRecordDirty = false;
+
       for (const item of order.items) {
         const orderQty = item.quantity || 1;
 
-        // ── 1. COLD DRINK stock minus ──────────────────────────────────
+        // ── COLD DRINK: deduct directly from ColdDrink model ──────────────
         if (item.isColdDrink && item.coldDrinkId && item.coldDrinkSizeId) {
           try {
             const drink = await ColdDrink.findById(item.coldDrinkId);
@@ -119,56 +188,125 @@ exports.updateOrderStatus = async (req, res) => {
               if (variant) {
                 variant.currentStock = Math.max(0, variant.currentStock - orderQty);
                 await drink.save();
-                console.log(`Cold drink deducted: ${drink.name} ${variant.size} -${orderQty}`);
+                console.log(`[ColdDrink] Deducted: ${drink.name} ${variant.size} -${orderQty}`);
               }
             }
           } catch (e) {
-            console.error('Cold drink deduct error:', e.message);
+            console.error('[ColdDrink] Deduct error:', e.message);
           }
-          continue; // cold drink ka koi inventory ingredient nahi
+          continue; // Cold drinks don't use chef inventory
         }
 
-        // ── 2. PRODUCT INGREDIENTS inventory minus ─────────────────────
-        if (item.ingredients && item.ingredients.length > 0) {
-          for (const ing of item.ingredients) {
-            if (!ing.inventoryItemId || !ing.quantity) continue;
-            try {
-              const invItem = await Inventory.findById(ing.inventoryItemId);
-              if (!invItem) continue;
+        // ── PRODUCT INGREDIENTS: deduct from chef's ChefInventory ─────────
+        // Order items mein ingredients nahi hoti — Product model se fetch karo
+        const Product = require('../models/Product');
+        let ingredients = [];
 
-              const deductQty = parseFloat(ing.quantity) * orderQty;
-              invItem.currentStock    = Math.max(0, invItem.currentStock - deductQty);
-              invItem.totalIssueValue = (invItem.totalIssueValue || 0) +
-                deductQty * (invItem.averageCost || invItem.pricePerUnit || 0);
-              invItem.stockHistory.push({ date: new Date(), quantity: deductQty, type: 'out' });
-              await invItem.save();
-
-              // Chef record mein bhi usedQuantity update karo (agar hai)
-              if (chefRecord) {
-                const chefItem = chefRecord.items.find(
-                  ci => ci.inventoryItemId.toString() === ing.inventoryItemId.toString()
-                );
-                if (chefItem) {
-                  const newUsed = chefItem.usedQuantity + deductQty;
-                  // issuedQuantity se zyada nahi hoga
-                  chefItem.usedQuantity = Math.min(newUsed, chefItem.issuedQuantity);
-                }
-              }
-
-              console.log(`Ingredient deducted: ${invItem.name} -${deductQty} ${ing.unit || invItem.unit}`);
-            } catch (e) {
-              console.error('Ingredient deduct error:', e.message);
+        try {
+          const product = await Product.findById(item.itemId).lean();
+          if (product) {
+            const sizeData = product.sizes.find(s => s.size === item.size);
+            if (sizeData && sizeData.ingredients && sizeData.ingredients.length > 0) {
+              ingredients = sizeData.ingredients;
             }
           }
+        } catch (e) {
+          console.error('[Ingredients] Product fetch error:', e.message);
+        }
+
+        if (ingredients.length === 0) continue;
+
+        for (const ing of ingredients) {
+          if (!ing.inventoryItemId || !ing.quantity) continue;
+
+          try {
+            // ── Unit conversion ────────────────────────────────────────────
+            // ing.unit  = unit set on product ingredient (g, ml, pieces …)
+            // We need inventory unit to do proper conversion
+            const invItem = await Inventory.findById(ing.inventoryItemId).lean();
+            if (!invItem) {
+              console.warn(`[Ingredients] Inventory item not found: ${ing.inventoryItemId}`);
+              continue;
+            }
+
+            // Convert ingredient qty (e.g. 200 g) → inventory unit (e.g. 0.2 kg)
+            const ingredientQtyInInventoryUnit = convertToInventoryUnit(
+              ing.quantity * orderQty,  // total for this order line
+              ing.unit || invItem.unit, // ingredient's own unit
+              invItem.unit              // inventory unit
+            );
+
+            console.log(
+              `[Ingredients] ${invItem.name}: ${ing.quantity * orderQty} ${ing.unit || invItem.unit}` +
+              ` → ${ingredientQtyInInventoryUnit.toFixed(4)} ${invItem.unit}`
+            );
+
+            // ── Deduct from ChefInventory ──────────────────────────────────
+            if (chefRecord) {
+              const chefItem = chefRecord.items.find(
+                ci => ci.inventoryItemId.toString() === ing.inventoryItemId.toString()
+              );
+
+              if (chefItem) {
+                const remaining = chefItem.issuedQuantity
+                  - chefItem.usedQuantity
+                  - chefItem.returnedQuantity;
+
+                // Don't exceed what was issued to chef
+                const actualDeduct = Math.min(ingredientQtyInInventoryUnit, Math.max(remaining, 0));
+                if (actualDeduct > 0) {
+                  chefItem.usedQuantity += actualDeduct;
+                  chefRecordDirty = true;
+                  console.log(
+                    `[ChefInventory] ${invItem.name}: usedQty +${actualDeduct.toFixed(4)} ${invItem.unit}`
+                  );
+                } else {
+                  console.warn(
+                    `[ChefInventory] ${invItem.name}: no remaining stock for chef (remaining=${remaining})`
+                  );
+                }
+              } else {
+                // Item not in chef's record (was not issued to chef) — skip
+                console.warn(
+                  `[ChefInventory] ${invItem.name} not found in chef's issued items. Skipping.`
+                );
+              }
+            } else {
+              // Chef has no active inventory record today
+              // This means ingredients were NOT pre-issued to chef
+              // In this case deduct directly from main inventory as fallback
+              console.warn(
+                `[ChefInventory] No active record for chef ${req.user._id}. ` +
+                `Falling back to main inventory deduction for ${invItem.name}.`
+              );
+              await Inventory.findByIdAndUpdate(ing.inventoryItemId, {
+                $inc: { currentStock: -ingredientQtyInInventoryUnit },
+                $push: {
+                  stockHistory: {
+                    date: new Date(),
+                    quantity: ingredientQtyInInventoryUnit,
+                    type: 'out',
+                  },
+                },
+              });
+            }
+          } catch (e) {
+            console.error(`[Ingredients] Error processing ingredient ${ing.inventoryItemId}:`, e.message);
+          }
         }
       }
 
-      // Chef record save karo agar update hua
-      if (chefRecord) {
-        try { await chefRecord.save(); } catch (e) { console.error('ChefRecord save error:', e.message); }
+      // Save chef record once if any items were modified
+      if (chefRecord && chefRecordDirty) {
+        try {
+          await chefRecord.save();
+          console.log('[ChefInventory] Record saved after order-ready deductions.');
+        } catch (e) {
+          console.error('[ChefInventory] Save error:', e.message);
+        }
       }
 
-      // Double deduction se bachao
+      // Mark stock as deducted to prevent double deduction
       order.stockDeducted = true;
     }
 
@@ -191,9 +329,9 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-// ══════════════════════════════════════════════════════
-//  CHEF'S OWN INVENTORY (issued by inventory officer)
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+//  CHEF'S OWN INVENTORY
+// ══════════════════════════════════════════════════════════════════════════════
 
 exports.getMyInventory = async (req, res) => {
   try {
@@ -298,22 +436,18 @@ exports.getMyReturnHistory = async (req, res) => {
   }
 };
 
-// ══════════════════════════════════════════════════════
-//  INVENTORY (chef ki nazar se — sirf regular inventory)
-//  Cold drinks IS NOT returned here
-// ══════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+//  INVENTORY (chef view)
+// ══════════════════════════════════════════════════════════════════════════════
 
 exports.getInventory = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    // Cold drinks NAHI aayengi — sirf Inventory model se
     const inventory = await Inventory.find({ branchId, isActive: true }).sort({ name: 1 }).lean();
-
     const withFlags = inventory.map(item => ({
       ...item,
       isLowStock: item.currentStock <= item.minimumStock,
     }));
-
     res.json({ success: true, inventory: withFlags, count: withFlags.length });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

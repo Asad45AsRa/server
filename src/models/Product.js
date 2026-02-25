@@ -10,7 +10,14 @@ const productSchema = new mongoose.Schema({
     price: { type: Number, required: true },
     ingredients: [{
       inventoryItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', required: true },
-      quantity: { type: Number, required: true }
+      quantity: { type: Number, required: true },
+      unit: {
+        type: String,
+        enum: ['g', 'gram', 'grams', 'kg', 'half_kg', 'quarter_kg',
+               'ml', 'milliliter', 'liter', 'half_liter',
+               'pieces', 'piece', 'pcs', 'nos', ''],
+        default: ''
+      }
     }]
   }],
   preparationTime: { type: Number, default: 15 },

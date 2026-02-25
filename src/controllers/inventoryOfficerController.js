@@ -195,32 +195,50 @@ exports.issueInventoryToChef = async (req, res) => {
       const invItem = await Inventory.findById(item.inventoryItemId);
       if (!invItem)
         return res.status(404).json({ success: false, message: `Item ${item.inventoryItemId} not found` });
-      if (invItem.currentStock < item.issuedQuantity)
+
+      // ✅ FIX: Always parse as float — request body can send strings
+      const qtyToIssue   = parseFloat(item.issuedQuantity) || 0;
+      const currentStock = parseFloat(invItem.currentStock) || 0;
+
+      if (qtyToIssue <= 0)
+        return res.status(400).json({ success: false, message: `Invalid quantity for ${invItem.name}` });
+
+      if (currentStock < qtyToIssue)
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for ${invItem.name}. Available: ${invItem.currentStock} ${invItem.unit}`
+          message: `Insufficient stock for ${invItem.name}. Available: ${currentStock} ${invItem.unit}, Requested: ${qtyToIssue} ${invItem.unit}`
         });
 
-      invItem.currentStock    -= item.issuedQuantity;
-      invItem.totalIssueValue += item.issuedQuantity * (invItem.averageCost || invItem.pricePerUnit);
-      invItem.stockHistory.push({ date: new Date(), quantity: item.issuedQuantity, type: 'out' });
+      const unitCost  = parseFloat(invItem.averageCost || invItem.pricePerUnit) || 0;
+      const totalCost = qtyToIssue * unitCost;
+
+      invItem.currentStock    = currentStock - qtyToIssue;
+      invItem.totalIssueValue = (parseFloat(invItem.totalIssueValue) || 0) + totalCost;
+      invItem.stockHistory.push({ date: new Date(), quantity: qtyToIssue, type: 'out' });
       await invItem.save();
 
       await InventoryTransaction.create({
-        itemId: item.inventoryItemId, type: 'issue',
-        quantity: item.issuedQuantity, unit: invItem.unit,
-        pricePerUnit: invItem.averageCost || invItem.pricePerUnit,
-        totalCost: item.issuedQuantity * (invItem.averageCost || invItem.pricePerUnit),
-        issuedTo: chefId, receivedBy: req.user._id,
-        notes: notes || 'Daily issue to chef', date: new Date()
+        itemId:      item.inventoryItemId,
+        type:        'issue',
+        quantity:    qtyToIssue,
+        unit:        invItem.unit,
+        pricePerUnit: unitCost,
+        totalCost,
+        issuedTo:    chefId,
+        receivedBy:  req.user._id,
+        notes:       notes || 'Daily issue to chef',
+        date:        new Date()
       });
 
       issuedItems.push({
-        inventoryItemId: item.inventoryItemId, name: invItem.name,
-        unit: invItem.unit, issuedQuantity: item.issuedQuantity
+        inventoryItemId: item.inventoryItemId,
+        name:            invItem.name,
+        unit:            invItem.unit,
+        issuedQuantity:  qtyToIssue
       });
     }
 
+    // Create or update today's ChefInventory record
     const today    = new Date(); today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
@@ -233,19 +251,28 @@ exports.issueInventoryToChef = async (req, res) => {
         const existing = chefRecord.items.find(
           i => i.inventoryItemId.toString() === newItem.inventoryItemId.toString()
         );
-        if (existing) { existing.issuedQuantity += newItem.issuedQuantity; }
-        else          { chefRecord.items.push({ ...newItem, usedQuantity: 0, returnedQuantity: 0 }); }
+        if (existing) {
+          existing.issuedQuantity += newItem.issuedQuantity;
+        } else {
+          chefRecord.items.push({ ...newItem, usedQuantity: 0, returnedQuantity: 0 });
+        }
       }
       await chefRecord.save();
     } else {
       chefRecord = await ChefInventory.create({
-        chefId, branchId: req.user.branchId,
-        items: issuedItems.map(i => ({ ...i, usedQuantity: 0, returnedQuantity: 0 })),
-        issuedBy: req.user._id, notes
+        chefId,
+        branchId: req.user.branchId,
+        items:    issuedItems.map(i => ({ ...i, usedQuantity: 0, returnedQuantity: 0 })),
+        issuedBy: req.user._id,
+        notes
       });
     }
 
-    res.status(201).json({ success: true, chefInventory: chefRecord, message: 'Inventory issued to chef successfully' });
+    res.status(201).json({
+      success: true,
+      chefInventory: chefRecord,
+      message: 'Inventory issued to chef successfully'
+    });
   } catch (error) {
     console.error('Issue to chef error:', error);
     res.status(500).json({ success: false, message: error.message });

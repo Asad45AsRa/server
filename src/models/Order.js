@@ -5,10 +5,13 @@ const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, required: true, unique: true },
   branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
   orderType: { type: String, enum: Object.values(OrderType), required: true },
-  tableNumber: { type: Number },
+  tableNumber: { type: Number, default: null },
+
+  // ✅ FIX: floor enum removed so null is allowed for takeaway/delivery orders
   floor: {
     type: String,
-    enum: ['ground_floor', 'first_floor', 'second_floor', 'outdoor']
+    enum: ['ground_floor', 'first_floor', 'second_floor', 'outdoor', null],
+    default: null,
   },
 
   items: [{
@@ -29,34 +32,37 @@ const orderSchema = new mongoose.Schema({
 
   status: { type: String, enum: Object.values(OrderStatus), default: OrderStatus.PENDING },
 
-  waiterId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  chefId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  deliveryBoyId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  cashierId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  waiterId:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  chefId:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  deliveryBoyId:{ type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  cashierId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
-  customerName: { type: String },
-  customerPhone: { type: String },
-  deliveryAddress: { type: String },
+  customerName:    { type: String, default: null },
+  customerPhone:   { type: String, default: null },
+  deliveryAddress: { type: String, default: null },
 
-  estimatedTime: { type: Number },
-  actualTime: { type: Number },
+  // ✅ NEW: Note from waiter for cashier (shows on cashier screen & slip)
+  cashierNote: { type: String, default: '' },
+
+  estimatedTime:   { type: Number },
+  actualTime:      { type: Number },
   additionalDelay: { type: Number, default: 0 },
 
   notes: { type: String },
 
-  // ✅ Delivery meter tracking fields
-  startMeterReading:  { type: Number },   // km reading before departure
-  endMeterReading:    { type: Number },   // km reading after return
-  distanceTravelled:  { type: Number },   // endMeter - startMeter
-  cashReceived:       { type: Number },   // cash collected from customer
+  // Delivery meter tracking
+  startMeterReading: { type: Number },
+  endMeterReading:   { type: Number },
+  distanceTravelled: { type: Number },
+  cashReceived:      { type: Number },
 
   // Timestamps
-  acceptedAt:   { type: Date },
-  preparingAt:  { type: Date },
-  readyAt:      { type: Date },
-  departedAt:   { type: Date },  
-  deliveredAt:  { type: Date },
-  completedAt:  { type: Date }
+  acceptedAt:  { type: Date },
+  preparingAt: { type: Date },
+  readyAt:     { type: Date },
+  departedAt:  { type: Date },
+  deliveredAt: { type: Date },
+  completedAt: { type: Date },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', orderSchema);

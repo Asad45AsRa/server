@@ -4,6 +4,7 @@ const Deal = require('../models/Deal');
 const Inventory = require('../models/Inventory');
 const ColdDrink = require('../models/Colddrink');
 const Table = require('../models/Table');
+const User = require('../models/User');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
@@ -27,10 +28,9 @@ exports.getMenu = async (req, res) => {
       .populate('products.productId', 'name image')
       .lean();
 
-    // ✅ FIX: price field add karo takey frontend deal.price se access kar sake
     const deals = rawDeals.map(d => ({
       ...d,
-      price: d.discountedPrice,  // ✅ ye line deal ki price 0.00 hone se bachati hai
+      price: d.discountedPrice,
     }));
 
     const now = new Date();
@@ -69,6 +69,25 @@ exports.getMenu = async (req, res) => {
   }
 };
 
+// ========== GET DELIVERY BOYS ==========
+
+exports.getDeliveryBoys = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+
+    const boys = await User.find({
+      branchId,
+      role: 'delivery',
+      isApproved: true,
+    }).select('name phone _id').lean();
+
+    res.json({ success: true, deliveryBoys: boys });
+  } catch (error) {
+    console.error('Get delivery boys error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // ========== TABLES ==========
 
 exports.getTables = async (req, res) => {
@@ -90,9 +109,9 @@ exports.getTables = async (req, res) => {
 
     const groupedTables = {
       ground_floor: [],
-      first_floor: [],
+      first_floor:  [],
       second_floor: [],
-      outdoor: []
+      outdoor:      []
     };
 
     tables.forEach(table => {
@@ -109,12 +128,21 @@ exports.getTables = async (req, res) => {
 };
 
 // ========== CREATE ORDER ==========
+// Supports: dine_in, takeaway, delivery
 
 exports.createOrder = async (req, res) => {
   try {
     const {
-      orderType, tableNumber, floor, items,
-      customerName, customerPhone, deliveryAddress, notes
+      orderType,
+      tableNumber,
+      floor,
+      items,
+      customerName,
+      customerPhone,
+      deliveryAddress,
+      notes,
+      cashierNote,
+      deliveryBoyId,
     } = req.body;
 
     if (!items || items.length === 0) {
@@ -124,48 +152,42 @@ exports.createOrder = async (req, res) => {
     const processedItems = items.map(item => {
       let itemType = 'Product';
       if (item.type === 'cold_drink') itemType = 'Inventory';
-      else if (item.type === 'deal') itemType = 'Deal';
+      else if (item.type === 'deal')   itemType = 'Deal';
       return { ...item, itemType: item.itemType || itemType };
     });
 
+    // ── Validation ──────────────────────────────────────────────────────────
     if (orderType === 'dine_in' && (!tableNumber || !floor)) {
       return res.status(400).json({
         success: false,
-        message: 'Table number and floor are required for dine-in orders'
+        message: 'Table number and floor are required for dine-in orders',
       });
     }
 
-    // Inventory checks
+    if ((orderType === 'takeaway' || orderType === 'delivery') && (!customerName || !customerPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer name and phone are required for takeaway/delivery orders',
+      });
+    }
+
+    if (orderType === 'delivery' && !deliveryAddress) {
+      return res.status(400).json({
+        success: false,
+        message: 'Delivery address is required for delivery orders',
+      });
+    }
+
+    // ── Cold drink stock check ──────────────────────────────────────────────
     for (const item of processedItems) {
-      if (item.type === 'product') {
-        const product = await Product.findById(item.itemId).populate('sizes.ingredients.inventoryItemId');
-        if (!product) {
-          return res.status(404).json({ success: false, message: `Product not found: ${item.itemId}` });
-        }
-        const sizeData = product.sizes.find(s => s.size === item.size);
-        if (!sizeData) {
-          return res.status(400).json({ success: false, message: `Size ${item.size} not found for ${product.name}` });
-        }
-        if (sizeData.ingredients && sizeData.ingredients.length > 0) {
-          for (const ingredient of sizeData.ingredients) {
-            const inventory = await Inventory.findById(ingredient.inventoryItemId);
-            const requiredQty = ingredient.quantity * item.quantity;
-            if (inventory && inventory.currentStock < requiredQty) {
-              return res.status(400).json({
-                success: false,
-                message: `Insufficient stock for ${product.name} (${inventory.name})`
-              });
-            }
-          }
-        }
-      } else if (item.type === 'cold_drink') {
+      if (item.type === 'cold_drink') {
         const coldDrink = await ColdDrink.findOne({ 'sizes._id': item.itemId });
         if (coldDrink) {
           const sizeVariant = coldDrink.sizes.id(item.itemId);
           if (sizeVariant && sizeVariant.currentStock < item.quantity) {
             return res.status(400).json({
               success: false,
-              message: `Insufficient stock for ${coldDrink.name} (${sizeVariant.size})`
+              message: `Insufficient stock for ${coldDrink.name} (${sizeVariant.size})`,
             });
           }
         }
@@ -175,56 +197,88 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
     const estimatedTime = calculateTotalTime(processedItems);
 
-    const order = await Order.create({
-      orderNumber: generateOrderNumber(),
-      branchId: req.user.branchId,
-      orderType,
-      tableNumber: orderType === 'dine_in' ? tableNumber : null,
-      floor: orderType === 'dine_in' ? floor : null,
-      items: processedItems,
-      subtotal, tax, total, estimatedTime,
-      waiterId: req.user._id,
-      customerName, customerPhone, deliveryAddress, notes,
-      status: 'pending'
-    });
+    // ── Build cashier note if not provided ────────────────────────────────
+    let finalCashierNote = cashierNote || '';
+    if (!finalCashierNote) {
+      if (orderType === 'dine_in') {
+        const floorLabel = (floor || '').replace(/_/g, ' ');
+        finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${floorLabel})`;
+      } else if (orderType === 'takeaway') {
+        finalCashierNote = `🥡 Takeaway — ${customerName}${customerPhone ? ' | ' + customerPhone : ''}`;
+      } else if (orderType === 'delivery') {
+        finalCashierNote = `🚚 Delivery — ${customerName} | ${customerPhone}`;
+      }
+    }
 
-    // AUTO-CREATE / OCCUPY TABLE
+    // ── ✅ KEY FIX: Do NOT set floor/tableNumber for non-dine_in ──────────
+    // Setting them to null causes Mongoose enum validation error.
+    // Instead, simply omit them from the document.
+    const orderData = {
+      orderNumber: generateOrderNumber(),
+      branchId:    req.user.branchId,
+      orderType,
+      items:        processedItems,
+      subtotal, tax, total, estimatedTime,
+      waiterId:    req.user._id,
+      notes,
+      cashierNote: finalCashierNote,
+      status:      'pending',
+    };
+
+    // Only set table fields for dine_in
     if (orderType === 'dine_in') {
-      let table = await Table.findOne({
-        branchId: req.user.branchId,
-        tableNumber,
-        floor
-      });
+      orderData.tableNumber = tableNumber;
+      orderData.floor       = floor;
+    }
+
+    // Customer fields for takeaway & delivery
+    if (orderType === 'takeaway' || orderType === 'delivery') {
+      orderData.customerName  = customerName;
+      orderData.customerPhone = customerPhone;
+    }
+
+    // Extra delivery fields
+    if (orderType === 'delivery') {
+      orderData.deliveryAddress = deliveryAddress;
+      if (deliveryBoyId) orderData.deliveryBoyId = deliveryBoyId;
+    }
+
+    const order = await Order.create(orderData);
+
+    // ── Auto-occupy table for dine_in ─────────────────────────────────────
+    if (orderType === 'dine_in') {
+      let table = await Table.findOne({ branchId: req.user.branchId, tableNumber, floor });
 
       if (!table) {
         table = await Table.create({
-          tableNumber,
-          capacity: 4,
-          floor,
+          tableNumber, capacity: 4, floor,
           branchId: req.user.branchId,
-          isActive: true,
-          isOccupied: false
+          isActive: true, isOccupied: false,
         });
       }
 
       if (table.isOccupied) {
         await Order.findByIdAndDelete(order._id);
-        return res.status(400).json({ success: false, message: `Table ${tableNumber} is already occupied` });
+        return res.status(400).json({
+          success: false,
+          message: `Table ${tableNumber} is already occupied`,
+        });
       }
 
-      table.isOccupied = true;
+      table.isOccupied     = true;
       table.currentOrderId = order._id;
       await table.save();
     }
 
     const populatedOrder = await Order.findById(order._id)
-      .populate('waiterId', 'name')
-      .populate('items.itemId', 'name image');
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('items.itemId',  'name image');
 
     res.status(201).json({
       success: true,
-      order: populatedOrder,
-      message: 'Order created successfully'
+      order:   populatedOrder,
+      message: 'Order created successfully',
     });
   } catch (error) {
     console.error('Create order error:', error);
@@ -241,19 +295,16 @@ exports.getMyOrders = async (req, res) => {
     let query;
     if (showHistory === 'true') {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      query = {
-        waiterId: req.user._id,
-        createdAt: { $gte: sevenDaysAgo }
-      };
+      query = { waiterId: req.user._id, createdAt: { $gte: sevenDaysAgo } };
     } else {
-      query = {
-        waiterId: req.user._id,
-        status: { $nin: ['completed', 'cancelled'] }
-      };
+      // Last 24h — includes completed/cancelled for history tab
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      query = { waiterId: req.user._id, createdAt: { $gte: oneDayAgo } };
     }
 
     const orders = await Order.find(query)
-      .populate('chefId', 'name')
+      .populate('chefId',       'name')
+      .populate('deliveryBoyId','name phone')
       .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
       .lean();
@@ -266,11 +317,12 @@ exports.getMyOrders = async (req, res) => {
 };
 
 // ========== UPDATE ORDER ==========
+// ✅ Allows pending, accepted, AND preparing statuses
 
 exports.updateOrder = async (req, res) => {
   try {
     const orderId = req.params.id;
-    const { items, notes } = req.body;
+    const { items, notes, cashierNote } = req.body;
 
     if (!orderId) {
       return res.status(400).json({ success: false, message: 'Order ID is required' });
@@ -283,8 +335,12 @@ exports.updateOrder = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to update this order' });
     }
 
-    if (order.status !== 'pending') {
-      return res.status(400).json({ success: false, message: 'Cannot update order after chef acceptance' });
+    const EDITABLE_STATUSES = ['pending', 'accepted', 'preparing'];
+    if (!EDITABLE_STATUSES.includes(order.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot update order with status: ${order.status}`,
+      });
     }
 
     if (items && items.length > 0) {
@@ -292,28 +348,30 @@ exports.updateOrder = async (req, res) => {
         let itemType = item.itemType;
         if (!itemType) {
           if (item.type === 'cold_drink') itemType = 'Inventory';
-          else if (item.type === 'deal') itemType = 'Deal';
-          else itemType = 'Product';
+          else if (item.type === 'deal')  itemType = 'Deal';
+          else                            itemType = 'Product';
         }
         return { ...item, itemType };
       });
-
       const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
-      order.items = processedItems;
-      order.subtotal = subtotal;
-      order.tax = tax;
-      order.total = total;
+      order.items         = processedItems;
+      order.subtotal      = subtotal;
+      order.tax           = tax;
+      order.total         = total;
       order.estimatedTime = calculateTotalTime(processedItems);
     } else if (items && items.length === 0) {
       return res.status(400).json({ success: false, message: 'Order must have at least one item' });
     }
 
-    if (notes !== undefined) order.notes = notes;
+    if (notes       !== undefined) order.notes       = notes;
+    if (cashierNote !== undefined) order.cashierNote = cashierNote;
+
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
-      .populate('waiterId', 'name')
-      .populate('items.itemId', 'name');
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('items.itemId',  'name');
 
     res.json({ success: true, order: populatedOrder, message: 'Order updated successfully' });
   } catch (error) {
@@ -336,37 +394,34 @@ exports.markDelivered = async (req, res) => {
     if (order.status !== 'ready') {
       return res.status(400).json({
         success: false,
-        message: 'Order must be in "ready" status to mark as delivered'
+        message: 'Order must be in "ready" status to mark as delivered',
       });
     }
 
-    order.status = 'delivered';
+    order.status      = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
-      .populate('waiterId', 'name')
+      .populate('waiterId',     'name')
       .populate('items.itemId', 'name');
 
-    res.json({
-      success: true,
-      order: populatedOrder,
-      message: 'Order marked as delivered'
-    });
+    res.json({ success: true, order: populatedOrder, message: 'Order marked as delivered' });
   } catch (error) {
     console.error('Mark delivered error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== GET ORDER SLIP DATA ==========
+// ========== GET ORDER SLIP ==========
 
 exports.getOrderSlip = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('waiterId', 'name')
-      .populate('cashierId', 'name')
-      .populate('items.itemId', 'name');
+      .populate('waiterId',      'name')
+      .populate('cashierId',     'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId',  'name');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
@@ -375,25 +430,27 @@ exports.getOrderSlip = async (req, res) => {
     }
 
     const slipData = {
-      orderNumber: order.orderNumber,
-      orderType: order.orderType,
-      tableNumber: order.tableNumber,
-      floor: order.floor?.replace(/_/g, ' '),
+      orderNumber:  order.orderNumber,
+      orderType:    order.orderType,
+      tableNumber:  order.tableNumber,
+      floor:        order.floor?.replace(/_/g, ' '),
+      cashierNote:  order.cashierNote,
       items: order.items.map(item => ({
-        name: item.itemId?.name || item.name || 'Item',
-        size: item.size,
+        name:     item.itemId?.name || item.name || 'Item',
+        size:     item.size,
         quantity: item.quantity,
-        price: item.price,
+        price:    item.price,
         subtotal: item.price * item.quantity,
       })),
-      subtotal: order.subtotal || order.total,
-      discount: order.discount || 0,
-      tax: order.tax || 0,
-      total: order.total,
-      waiter: order.waiterId?.name || null,
+      subtotal:   order.subtotal || order.total,
+      discount:   order.discount || 0,
+      tax:        order.tax || 0,
+      total:      order.total,
+      waiter:     order.waiterId?.name   || null,
+      deliveryBoy:order.deliveryBoyId?.name || null,
       branchName: BRANCH_NAME,
-      createdAt: order.createdAt,
-      status: order.status,
+      createdAt:  order.createdAt,
+      status:     order.status,
     };
 
     res.json({ success: true, slipData });
@@ -431,6 +488,85 @@ exports.deleteOrder = async (req, res) => {
     res.json({ success: true, message: 'Order cancelled successfully' });
   } catch (error) {
     console.error('Delete order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const BRANCH_NAME_PRINT = 'Al Madina Fast Food Shahkot';
+
+exports.requestPrint = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('items.itemId',  'name');
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // ─── Waiter sirf apni order print request bhej sakta hai ───
+    if (order.waiterId?._id?.toString() !== req.user._id.toString() &&
+        order.waiterId?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    // ─── Slip data build karo (cashier slip jaisa) ─────────────
+    const slipData = {
+      orderNumber:     order.orderNumber,
+      orderType:       order.orderType,
+      tableNumber:     order.tableNumber   || null,
+      floor:           order.floor         ? order.floor.replace(/_/g, ' ') : null,
+      cashierNote:     order.cashierNote   || null,
+      customerName:    order.customerName  || null,
+      customerPhone:   order.customerPhone || null,
+      deliveryAddress: order.deliveryAddress || null,
+      deliveryBoy:     order.deliveryBoyId?.name || null,
+      waiter:          order.waiterId?.name || null,
+      items: (order.items || []).map(item => ({
+        name:     item.itemId?.name || item.name || 'Item',
+        size:     item.size     || null,
+        quantity: item.quantity || 1,
+        price:    item.price    || 0,
+        subtotal: (item.price || 0) * (item.quantity || 1),
+      })),
+      subtotal:  order.subtotal || order.total,
+      discount:  order.discount || 0,
+      tax:       order.tax      || 0,
+      total:     order.total,
+      branchName: BRANCH_NAME_PRINT,
+      createdAt:  order.createdAt,
+      status:     order.status,
+      // Print request timestamp
+      printRequestedAt: new Date(),
+      printRequestedBy: req.user.name || 'Waiter',
+    };
+
+    // ─── Socket.IO se desktop cashier ko emit karo ────────────
+    const io = req.app.get('io');
+    if (io) {
+      // Branch ke sab cashier desktops ko bhejo
+      io.to(`branch-${order.branchId}`).emit('print-order', {
+        orderId:     String(order._id),
+        orderNumber: order.orderNumber,
+        branchId:    String(order.branchId),
+        slipData,
+        requestedBy: req.user.name || 'Waiter',
+        requestedAt: new Date(),
+      });
+      console.log(`[PrintRequest] Order ${order.orderNumber} → branch ${order.branchId}`);
+    } else {
+      console.warn('[PrintRequest] Socket.IO not available on app instance');
+    }
+
+    res.json({
+      success: true,
+      message: `Print request sent! Desktop par automatically print ho jayega.`,
+      orderNumber: order.orderNumber,
+    });
+
+  } catch (error) {
+    console.error('requestPrint error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
