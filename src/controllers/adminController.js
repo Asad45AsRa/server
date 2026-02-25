@@ -181,9 +181,6 @@ exports.updateUserRole = async (req, res) => {
 };
 
 // ✅ FIXED: resetUserPassword
-// Bug was: manually hashing + findByIdAndUpdate could cause double-hash
-// if User model also has pre('findOneAndUpdate') hook.
-// Fix: use findById + user.save() so pre('save') hook handles hashing correctly.
 exports.resetUserPassword = async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -194,7 +191,6 @@ exports.resetUserPassword = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Set plain-text password — pre('save') hook in User model will hash it
     user.password = newPassword;
     await user.save();
 
@@ -393,6 +389,22 @@ exports.getAllInventory = async (req, res) => {
     const lowStockCount = inventory.filter(i => i.currentStock <= i.minimumStock).length;
     res.json({ success: true, inventory, statistics: { totalItems: inventory.length, totalValue, lowStockCount } });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ NEW: Admin kisi bhi branch ka inventory item delete kar sakta hai
+exports.deleteInventoryItem = async (req, res) => {
+  try {
+    const item = await Inventory.findByIdAndUpdate(
+      req.params.id,
+      { isActive: false },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'Inventory item not found' });
+    res.json({ success: true, message: `"${item.name}" deleted successfully` });
+  } catch (error) {
+    console.error('Admin deleteInventoryItem Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

@@ -67,6 +67,23 @@ exports.updateInventoryItem = async (req, res) => {
   }
 };
 
+// ── DELETE INVENTORY ITEM (Soft Delete) ───────────────────────────────────────
+// ✅ NEW: isActive: false set karo — data preserve rehta hai, sirf display se hata deta hai
+exports.deleteInventoryItem = async (req, res) => {
+  try {
+    const item = await Inventory.findByIdAndUpdate(
+      req.params.id,
+      { isActive: false },
+      { new: true }
+    );
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    res.json({ success: true, message: `"${item.name}" deleted successfully` });
+  } catch (error) {
+    console.error('deleteInventoryItem error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // ── RESTOCK ───────────────────────────────────────────────────────────────────
 exports.restockInventory = async (req, res) => {
   try {

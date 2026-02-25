@@ -7,6 +7,7 @@ const {
   getAllInventory,
   createInventoryItem,
   updateInventoryItem,
+  deleteInventoryItem,        // ✅ NEW
   restockInventory,
   getLowStockItems,
   assignInventoryToChef
@@ -34,6 +35,12 @@ router.put('/:id/restock',
 router.post('/assign-chef',
   checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'),
   assignInventoryToChef
+);
+
+// ✅ NEW: Delete — sirf Admin, Manager, aur Inventory Officer kar sakta hai
+router.delete('/:id',
+  checkRole(UserRole.ADMIN, UserRole.MANAGER, 'inventory_officer'),
+  deleteInventoryItem
 );
 
 module.exports = router;

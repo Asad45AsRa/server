@@ -3,7 +3,7 @@ const router = express.Router();
 const { protect } = require('../middlewares/auth');
 const { checkRole } = require('../middlewares/roleCheck');
 const { UserRole } = require('../config/constants');
-const { createInventoryItem } = require('../controllers/inventoryController');
+const { createInventoryItem, deleteInventoryItem } = require('../controllers/inventoryController');  // ✅ deleteInventoryItem add
 
 const {
   recordPurchase,
@@ -14,7 +14,7 @@ const {
   getAllRequests,
   approveRequest,
   rejectRequest,
-  issueApprovedRequest,        // ✅ WAS MISSING FROM ROUTER
+  issueApprovedRequest,
   createSupplier,
   getAllSuppliers,
   updateSupplier,
@@ -36,8 +36,9 @@ const {
 router.use(protect);
 router.use(checkRole(UserRole.ADMIN, 'inventory_officer'));
 
-// ── Inventory Item Creation ───────────────────────────────────────────────────
+// ── Inventory Item CRUD ───────────────────────────────────────────────────────
 router.post('/inventory', createInventoryItem);
+router.delete('/inventory/:id', deleteInventoryItem);   // ✅ NEW: Officer bhi delete kar sakta hai
 
 // ── Purchases ────────────────────────────────────────────────────────────────
 router.post('/purchases', recordPurchase);
@@ -62,7 +63,7 @@ router.get('/total-stock', getTotalStock);
 router.get('/requests', getAllRequests);
 router.put('/requests/:id/approve', approveRequest);
 router.put('/requests/:id/reject', rejectRequest);
-router.put('/requests/:id/issue', issueApprovedRequest);   // ✅ FIXED: YEH ROUTE MISSING THA
+router.put('/requests/:id/issue', issueApprovedRequest);
 
 // Chef bhi request kar sakta hai (alag middleware se)
 router.post('/requests/create', protect, checkRole(UserRole.CHEF), createRequest);

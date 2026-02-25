@@ -22,6 +22,7 @@ const {
   getAllDeals,
   deleteDeal,
   getAllInventory,
+  deleteInventoryItem,      // ✅ NEW
   assignManagerRights,
   getManagerRights,
 } = require('../controllers/adminController');
@@ -64,5 +65,6 @@ router.delete('/deals/:id', deleteDeal);
 
 // Inventory
 router.get('/inventory', getAllInventory);
+router.delete('/inventory/:id', deleteInventoryItem);   
 
 module.exports = router;
