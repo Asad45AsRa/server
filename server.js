@@ -46,7 +46,7 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
-const PORT = port || 5000;
+const PORT = process.env.PORT || port || 5000;
 
 const getLocalIP = () => {
   const { networkInterfaces } = require('os');
