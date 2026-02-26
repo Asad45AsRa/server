@@ -519,8 +519,9 @@ exports.requestPrint = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    if (order.waiterId?._id?.toString() !== req.user._id.toString() &&
-        order.waiterId?.toString() !== req.user._id.toString()) {
+    // Auth check
+    const waiterId = order.waiterId?._id?.toString() || order.waiterId?.toString();
+    if (waiterId !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
@@ -546,7 +547,7 @@ exports.requestPrint = async (req, res) => {
       discount:  order.discount || 0,
       tax:       order.tax      || 0,
       total:     order.total,
-      branchName: BRANCH_NAME_PRINT,
+      branchName: 'Al Madina Fast Food Shahkot',
       createdAt:  order.createdAt,
       status:     order.status,
       printRequestedAt: new Date(),
@@ -555,22 +556,29 @@ exports.requestPrint = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`branch-${order.branchId}`).emit('print-order', {
+      // ✅ FIX: branchId ko explicitly String mein convert karo
+      const branchIdStr = String(order.branchId);
+      const room = `branch-${branchIdStr}`;
+
+      console.log(`[PrintRequest] Emitting to room: ${room}`);
+
+      io.to(room).emit('print-order', {
         orderId:     String(order._id),
         orderNumber: order.orderNumber,
-        branchId:    String(order.branchId),
+        branchId:    branchIdStr,
         slipData,
         requestedBy: req.user.name || 'Waiter',
         requestedAt: new Date(),
       });
-      console.log(`[PrintRequest] Order ${order.orderNumber} → branch ${order.branchId}`);
+
+      console.log(`[PrintRequest] ✅ Order ${order.orderNumber} → ${room}`);
     } else {
       console.warn('[PrintRequest] Socket.IO not available on app instance');
     }
 
     res.json({
       success: true,
-      message: `Print request sent! Desktop par automatically print ho jayega.`,
+      message: 'Print request sent! Desktop par automatically print ho jayega.',
       orderNumber: order.orderNumber,
     });
 
