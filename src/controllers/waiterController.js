@@ -195,7 +195,7 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
+    const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
     // ── Build cashier note if not provided ────────────────────────────────
@@ -367,7 +367,7 @@ exports.updateOrder = async (req, res) => {
         }
         return { ...item, itemType };
       });
-      const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
+      const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 0);
       order.items         = processedItems;
       order.subtotal      = subtotal;
       order.tax           = tax;

@@ -202,7 +202,6 @@ const buildSlipData = (order, payment) => {
     })),
     subtotal: order.subtotal || order.total,
     discount: order.discount || 0,
-    tax: order.tax || 0,
     total: order.total,
     paymentMethod: payment.method,
     receivedAmount: payment.receivedAmount,
