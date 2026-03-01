@@ -28,10 +28,7 @@ exports.getMenu = async (req, res) => {
       .populate('products.productId', 'name image')
       .lean();
 
-    const deals = rawDeals.map(d => ({
-      ...d,
-      price: d.discountedPrice,
-    }));
+    const deals = rawDeals.map(d => ({ ...d, price: d.discountedPrice }));
 
     const now = new Date();
     const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
@@ -57,11 +54,7 @@ exports.getMenu = async (req, res) => {
     res.json({
       success: true,
       menu: { products, deals, coldDrinks },
-      counts: {
-        products: products.length,
-        deals: deals.length,
-        coldDrinks: coldDrinks.length
-      }
+      counts: { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length }
     });
   } catch (error) {
     console.error('Get menu error:', error);
@@ -115,9 +108,7 @@ exports.getTables = async (req, res) => {
     };
 
     tables.forEach(table => {
-      if (groupedTables[table.floor]) {
-        groupedTables[table.floor].push(table);
-      }
+      if (groupedTables[table.floor]) groupedTables[table.floor].push(table);
     });
 
     res.json({ success: true, tables, groupedTables, count: tables.length });
@@ -129,7 +120,11 @@ exports.getTables = async (req, res) => {
 
 // ========== CREATE ORDER ==========
 // Supports: dine_in, takeaway, delivery
-// ✅ NEW: Agar delivery order mein deliveryBoyId nahi → sab delivery boys ko broadcast karo
+//
+// ✅ UPDATED DELIVERY LOGIC:
+//   - Agar waiter ne deliveryBoyId diya → directly us ko assign karo (koi broadcast nahi)
+//   - Agar deliveryBoyId nahi diya → order unassigned banao, Chef ke "ready" karne ke
+//     baad chefController mein broadcast hoga (yahan nahi)
 
 exports.createOrder = async (req, res) => {
   try {
@@ -153,7 +148,7 @@ exports.createOrder = async (req, res) => {
     const processedItems = items.map(item => {
       let itemType = 'Product';
       if (item.type === 'cold_drink') itemType = 'Inventory';
-      else if (item.type === 'deal')   itemType = 'Deal';
+      else if (item.type === 'deal')  itemType = 'Deal';
       return { ...item, itemType: item.itemType || itemType };
     });
 
@@ -198,7 +193,7 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
-    // ── Build cashier note if not provided ────────────────────────────────
+    // ── Build cashier note ─────────────────────────────────────────────────
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
@@ -223,28 +218,29 @@ exports.createOrder = async (req, res) => {
       status:      'pending',
     };
 
-    // Only set table fields for dine_in
     if (orderType === 'dine_in') {
       orderData.tableNumber = tableNumber;
       orderData.floor       = floor;
     }
 
-    // Customer fields for takeaway & delivery
     if (orderType === 'takeaway' || orderType === 'delivery') {
       orderData.customerName  = customerName;
       orderData.customerPhone = customerPhone;
     }
 
-    // Extra delivery fields
     if (orderType === 'delivery') {
       orderData.deliveryAddress = deliveryAddress;
-      // ✅ Agar deliveryBoyId hai → assign karo; nahi hai → unassigned broadcast hoga
-      if (deliveryBoyId) orderData.deliveryBoyId = deliveryBoyId;
+      // ✅ Sirf tab assign karo jab waiter ne explicitly select kiya ho
+      if (deliveryBoyId) {
+        orderData.deliveryBoyId = deliveryBoyId;
+      }
+      // ❌ Agar nahi select kiya → deliveryBoyId null rahega
+      // ✅ Chef "ready" karega tab chefController mein broadcast hoga
     }
 
     const order = await Order.create(orderData);
 
-    // ── Auto-occupy table for dine_in ─────────────────────────────────────
+    // ── Auto-occupy table for dine_in ──────────────────────────────────────
     if (orderType === 'dine_in') {
       let table = await Table.findOne({ branchId: req.user.branchId, tableNumber, floor });
 
@@ -274,27 +270,31 @@ exports.createOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name phone')
       .populate('items.itemId',  'name image');
 
-    // ✅ NEW: Delivery order + deliveryBoyId nahi → tamam delivery boys ko broadcast
-    if (orderType === 'delivery' && !deliveryBoyId) {
+    // ✅ NOTE: Unassigned delivery broadcast ab yahan NAHI hoga.
+    // Chef ke "ready" karne par chefController.updateOrderStatus mein hoga.
+    // Agar deliveryBoyId assign hua hai to notification socket se ja sakti hai (optional).
+    if (orderType === 'delivery' && deliveryBoyId) {
       const io = req.app.get('io');
       if (io) {
-        io.to(`branch-${req.user.branchId}`).emit('new-unassigned-delivery', {
+        io.to(`branch-${req.user.branchId}`).emit('delivery-assigned', {
           orderId:         String(populatedOrder._id),
           orderNumber:     populatedOrder.orderNumber,
-          customerName:    customerName,
-          deliveryAddress: deliveryAddress,
-          total:           total,
-          itemCount:       processedItems.length,
-          createdAt:       populatedOrder.createdAt,
+          customerName,
+          deliveryAddress,
+          total,
+          deliveryBoyId:   String(deliveryBoyId),
+          assignedBy:      req.user.name || 'Waiter',
         });
-        console.log(`[Broadcast] Unassigned delivery ${populatedOrder.orderNumber} → branch-${req.user.branchId}`);
+        console.log(`[Waiter] Delivery order ${populatedOrder.orderNumber} assigned to boy ${deliveryBoyId}`);
       }
     }
 
     res.status(201).json({
       success: true,
       order:   populatedOrder,
-      message: 'Order created successfully',
+      message: orderType === 'delivery' && !deliveryBoyId
+        ? 'Order created. Jab chef ready karega tab delivery boys ko notify kiya jayega.'
+        : 'Order created successfully',
     });
   } catch (error) {
     console.error('Create order error:', error);
@@ -506,7 +506,7 @@ exports.deleteOrder = async (req, res) => {
   }
 };
 
-const BRANCH_NAME_PRINT = 'Al Madina Fast Food Shahkot';
+// ========== REQUEST PRINT ==========
 
 exports.requestPrint = async (req, res) => {
   try {
@@ -519,7 +519,6 @@ exports.requestPrint = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Auth check
     const waiterId = order.waiterId?._id?.toString() || order.waiterId?.toString();
     if (waiterId !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
@@ -547,7 +546,7 @@ exports.requestPrint = async (req, res) => {
       discount:  order.discount || 0,
       tax:       order.tax      || 0,
       total:     order.total,
-      branchName: 'Al Madina Fast Food Shahkot',
+      branchName: BRANCH_NAME,
       createdAt:  order.createdAt,
       status:     order.status,
       printRequestedAt: new Date(),
@@ -556,11 +555,8 @@ exports.requestPrint = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      // ✅ FIX: branchId ko explicitly String mein convert karo
       const branchIdStr = String(order.branchId);
       const room = `branch-${branchIdStr}`;
-
-      console.log(`[PrintRequest] Emitting to room: ${room}`);
 
       io.to(room).emit('print-order', {
         orderId:     String(order._id),
@@ -572,8 +568,6 @@ exports.requestPrint = async (req, res) => {
       });
 
       console.log(`[PrintRequest] ✅ Order ${order.orderNumber} → ${room}`);
-    } else {
-      console.warn('[PrintRequest] Socket.IO not available on app instance');
     }
 
     res.json({
@@ -581,7 +575,6 @@ exports.requestPrint = async (req, res) => {
       message: 'Print request sent! Desktop par automatically print ho jayega.',
       orderNumber: order.orderNumber,
     });
-
   } catch (error) {
     console.error('requestPrint error:', error);
     res.status(500).json({ success: false, message: error.message });

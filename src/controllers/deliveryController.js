@@ -156,8 +156,14 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
-// ========== ✅ NEW: GET UNASSIGNED ORDERS ==========
-// Branch ki tamam pending delivery orders jahan deliveryBoyId null ho
+// ========== GET UNASSIGNED ORDERS ==========
+//
+// ✅ UPDATED: Ab sirf 'ready' status orders fetch karta hai
+// Logic: Waiter order banata hai (pending) → Chef ready karta hai → Tab broadcast +
+// delivery boys ko 'ready' orders dikhte hain → Jo claim kare woh le
+//
+// 'pending' orders nahi dikhate kyunki chef ne abhi banaya nahi — 
+// kya pata chef decline kare ya order cancel ho jaye
 
 exports.getUnassignedOrders = async (req, res) => {
   try {
@@ -166,12 +172,12 @@ exports.getUnassignedOrders = async (req, res) => {
     const orders = await Order.find({
       branchId,
       orderType: 'delivery',
-      status: 'pending',
-      deliveryBoyId: null,
+      status: 'ready',          // ✅ Sirf ready orders — chef ne bana diya, ab deliver karo
+      deliveryBoyId: null,      // ✅ Koi assign nahi
     })
       .populate('waiterId', 'name')
       .populate('items.itemId', 'name')
-      .sort({ createdAt: -1 })
+      .sort({ readyAt: 1 })    // Pehle ready hua woh pehle dikhaye
       .lean();
 
     res.json({ success: true, orders, count: orders.length });
@@ -181,8 +187,8 @@ exports.getUnassignedOrders = async (req, res) => {
   }
 };
 
-// ========== ✅ NEW: CLAIM ORDER ==========
-// Atomic update — pehle jo claim kare woh jeetay, race condition safe hai
+// ========== CLAIM ORDER ==========
+// Atomic update — pehle jo claim kare woh jeetay, race condition safe
 
 exports.claimOrder = async (req, res) => {
   try {
@@ -192,13 +198,13 @@ exports.claimOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'orderId is required' });
     }
 
-    // findOneAndUpdate atomically checks aur update karta hai ek sath
+    // ✅ UPDATED: status 'ready' check karo (pehle 'pending' tha)
     const order = await Order.findOneAndUpdate(
       {
         _id: orderId,
         orderType: 'delivery',
-        status: 'pending',
-        deliveryBoyId: null,          // sirf tab claim ho jab still unassigned ho
+        status: 'ready',          // ✅ ready status — chef ne bana diya
+        deliveryBoyId: null,
         branchId: req.user.branchId,
       },
       { $set: { deliveryBoyId: req.user._id } },
@@ -215,7 +221,7 @@ exports.claimOrder = async (req, res) => {
       });
     }
 
-    // Baki delivery boys ko socket se batao — list se hata do
+    // Baki delivery boys ko batao — list se hata do
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${req.user.branchId}`).emit('order-claimed', {
@@ -230,7 +236,7 @@ exports.claimOrder = async (req, res) => {
     res.json({
       success: true,
       order,
-      message: `Order ${order.orderNumber} aapne claim kar li!`,
+      message: `Order ${order.orderNumber} aapne claim kar li! Abhi depart kar sakte hain.`,
     });
   } catch (error) {
     console.error('Claim order error:', error);
