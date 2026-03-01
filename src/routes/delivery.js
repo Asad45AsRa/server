@@ -1,3 +1,4 @@
+// routes/deliver.js
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middlewares/auth');
@@ -7,6 +8,8 @@ const {
   getMenu,
   createDeliveryOrder,
   getMyOrders,
+  getUnassignedOrders,   // ✅ ADD
+  claimOrder,            // ✅ ADD
   updateOrderStatus,
   completeDelivery,
   updateOrder
@@ -18,9 +21,11 @@ router.use(checkRole(UserRole.DELIVERY));
 router.get('/menu', getMenu);
 router.post('/orders', createDeliveryOrder);
 router.get('/orders/my-orders', getMyOrders);
+router.get('/orders/unassigned', getUnassignedOrders);   // ✅ ADD — specific pehle
+router.put('/orders/claim', claimOrder);                  // ✅ ADD
 router.put('/orders/status', updateOrderStatus);
 router.put('/orders/complete', completeDelivery);
-router.put('/orders/:id', updateOrder);   // Edit pending order (must be last to avoid conflicts)
+router.put('/orders/:id', updateOrder);   // /:id HAMESHA LAST
 
 module.exports = router;
 
