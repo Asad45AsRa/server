@@ -25,6 +25,10 @@ const {
   deleteInventoryItem,      // ✅ NEW
   assignManagerRights,
   getManagerRights,
+  getProductsPerformance,
+  getWorkersPerformance,
+  getHRReport,
+  getFinancialReport,
 } = require('../controllers/adminController');
 
 router.use(protect);
@@ -65,6 +69,11 @@ router.delete('/deals/:id', deleteDeal);
 
 // Inventory
 router.get('/inventory', getAllInventory);
-router.delete('/inventory/:id', deleteInventoryItem);   
+router.delete('/inventory/:id', deleteInventoryItem);
+
+router.get('/reports/products-performance', getProductsPerformance);
+router.get('/reports/workers-performance', getWorkersPerformance);
+router.get('/reports/hr', getHRReport);
+router.get('/reports/financial', getFinancialReport);
 
 module.exports = router;

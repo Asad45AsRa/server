@@ -456,4 +456,319 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
+exports.getProductsPerformance = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    let matchQuery = { status: 'completed' };
+
+    if (startDate && endDate) {
+      const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      matchQuery.createdAt = { $gte: start, $lte: end };
+    }
+
+    const orders = await Order.find(matchQuery).lean();
+
+    const productMap = {};
+    let totalItemsSold = 0;
+
+    orders.forEach(order => {
+      (order.items || []).forEach(item => {
+        const key = `${item.name}__${item.size || ''}__${item.type}`;
+        if (!productMap[key]) {
+          productMap[key] = {
+            name: item.name,
+            size: item.size || '-',
+            type: item.type || 'product',
+            quantitySold: 0,
+            revenue: 0,
+            orderCount: 0,
+          };
+        }
+        productMap[key].quantitySold += item.quantity || 1;
+        productMap[key].revenue     += (item.price || 0) * (item.quantity || 1);
+        productMap[key].orderCount  += 1;
+        totalItemsSold += item.quantity || 1;
+      });
+    });
+
+    const products = Object.values(productMap)
+      .sort((a, b) => b.revenue - a.revenue);
+
+    res.json({
+      success: true,
+      products,
+      summary: {
+        totalProducts:  products.length,
+        totalItemsSold,
+        totalRevenue:   products.reduce((s, p) => s + p.revenue, 0),
+        totalOrders:    orders.length,
+      }
+    });
+  } catch (error) {
+    console.error('getProductsPerformance Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getWorkersPerformance = async (req, res) => {
+  try {
+    const { startDate, endDate, month, year } = req.query;
+
+    let orderDateFilter   = {};
+    let attDateFilter     = {};
+    let salaryFilter      = {};
+
+    if (month && year) {
+      const { startDate: s, endDate: e } = getMonthDateRange(month, year);
+      orderDateFilter = { createdAt: { $gte: s, $lte: e } };
+      attDateFilter   = { date:      { $gte: s, $lte: e } };
+      salaryFilter    = { month: parseInt(month), year: parseInt(year) };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      orderDateFilter = { createdAt: { $gte: start, $lte: end } };
+      attDateFilter   = { date:      { $gte: start, $lte: end } };
+    }
+
+    const [workers, orders, attendanceRecords, salaries] = await Promise.all([
+      User.find({ role: { $ne: 'admin' } })
+        .select('-password')
+        .populate('branchId', 'name')
+        .lean(),
+      Order.find(orderDateFilter).lean(),
+      Attendance.find(attDateFilter).lean(),
+      Salary.find(salaryFilter).lean(),
+    ]);
+
+    const workerStats = workers.map(worker => {
+      const wId = worker._id.toString();
+
+      const ordersAsWaiter   = orders.filter(o => o.waiterId?.toString()      === wId).length;
+      const ordersAsChef     = orders.filter(o => o.chefId?.toString()        === wId).length;
+      const ordersAsDelivery = orders.filter(o => o.deliveryBoyId?.toString() === wId).length;
+      const ordersAsCashier  = orders.filter(o => o.cashierId?.toString()     === wId).length;
+
+      const workerAtt = attendanceRecords.filter(a => a.userId?.toString() === wId);
+      const presentDays  = workerAtt.filter(a => a.status === 'present').length;
+      const absentDays   = workerAtt.filter(a => a.status === 'absent').length;
+      const halfDays     = workerAtt.filter(a => a.status === 'half_day').length;
+      const leaveDays    = workerAtt.filter(a => a.status === 'leave').length;
+      const totalHours   = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      const totalRecorded = workerAtt.length;
+      const attendanceRate = totalRecorded > 0
+        ? Math.round(((presentDays + halfDays * 0.5) / totalRecorded) * 100) : 0;
+
+      const salary = salaries.find(s => s.userId?.toString() === wId);
+
+      return {
+        _id:                 worker._id,
+        name:                worker.name,
+        role:                worker.role,
+        email:               worker.email,
+        phone:               worker.phone,
+        branch:              worker.branchId?.name || 'N/A',
+        isActive:            worker.isActive,
+        isApproved:          worker.isApproved,
+        ordersAsWaiter,
+        ordersAsChef,
+        ordersAsDelivery,
+        ordersAsCashier,
+        totalOrdersHandled:  ordersAsWaiter + ordersAsChef + ordersAsDelivery + ordersAsCashier,
+        attendance: {
+          presentDays, absentDays, halfDays, leaveDays,
+          totalHours:   Math.round(totalHours * 10) / 10,
+          totalRecorded,
+          attendanceRate,
+        },
+        salary: salary ? {
+          totalSalary: salary.totalSalary,
+          baseSalary:  salary.baseSalary,
+          bonus:       salary.bonus,
+          deductions:  salary.deductions,
+          isPaid:      salary.isPaid,
+          paidDate:    salary.paidDate,
+        } : null,
+      };
+    });
+
+    res.json({ success: true, workers: workerStats, total: workerStats.length });
+  } catch (error) {
+    console.error('getWorkersPerformance Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getHRReport = async (req, res) => {
+  try {
+    const { month, year } = req.query;
+    if (!month || !year)
+      return res.status(400).json({ success: false, message: 'month and year are required' });
+
+    const { startDate, endDate } = getMonthDateRange(month, year);
+
+    const [workers, attendanceRecords, salaries] = await Promise.all([
+      User.find({ role: { $ne: 'admin' } })
+        .select('-password')
+        .populate('branchId', 'name')
+        .lean(),
+      Attendance.find({ date: { $gte: startDate, $lte: endDate } }).lean(),
+      Salary.find({ month: parseInt(month), year: parseInt(year) }).lean(),
+    ]);
+
+    const hrData = workers.map(worker => {
+      const wId      = worker._id.toString();
+      const workerAtt = attendanceRecords.filter(a => a.userId?.toString() === wId);
+      const salary    = salaries.find(s => s.userId?.toString() === wId);
+
+      const present      = workerAtt.filter(a => a.status === 'present').length;
+      const absent       = workerAtt.filter(a => a.status === 'absent').length;
+      const halfDay      = workerAtt.filter(a => a.status === 'half_day').length;
+      const leave        = workerAtt.filter(a => a.status === 'leave').length;
+      const totalHours   = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      const totalRecorded = workerAtt.length;
+      const attRate = totalRecorded > 0
+        ? Math.round(((present + halfDay * 0.5) / totalRecorded) * 100) : 0;
+
+      return {
+        _id:       worker._id,
+        name:      worker.name,
+        role:      worker.role,
+        branch:    worker.branchId?.name || 'N/A',
+        wageType:  worker.wageType,
+        isActive:  worker.isActive,
+        isApproved: worker.isApproved,
+        attendance: { present, absent, halfDay, leave, totalHours: Math.round(totalHours), totalRecorded, attRate },
+        salary: salary ? {
+          baseSalary:  salary.baseSalary,
+          bonus:       salary.bonus,
+          deductions:  salary.deductions,
+          totalSalary: salary.totalSalary,
+          isPaid:      salary.isPaid,
+          paidDate:    salary.paidDate,
+        } : null,
+      };
+    });
+
+    const totalPaid   = salaries.filter(s => s.isPaid ).reduce((sum, s) => sum + s.totalSalary, 0);
+    const totalUnpaid = salaries.filter(s => !s.isPaid).reduce((sum, s) => sum + s.totalSalary, 0);
+    const totalPresent = attendanceRecords.filter(a => a.status === 'present').length;
+    const totalAbsent  = attendanceRecords.filter(a => a.status === 'absent').length;
+    const totalHoursAll = attendanceRecords.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+
+    res.json({
+      success: true,
+      hrData,
+      summary: {
+        totalWorkers:        workers.length,
+        totalPaidSalaries:   totalPaid,
+        totalUnpaidSalaries: totalUnpaid,
+        salaryGenerated:     salaries.length,
+        totalPresent,
+        totalAbsent,
+        totalHours: Math.round(totalHoursAll),
+      }
+    });
+  } catch (error) {
+    console.error('getHRReport Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+exports.getFinancialReport = async (req, res) => {
+  try {
+    const { year, month, startDate, endDate } = req.query;
+
+    const MONTH_NAMES = [
+      'January','February','March','April','May','June',
+      'July','August','September','October','November','December'
+    ];
+
+    let periods = [];
+
+    if (startDate && endDate) {
+      const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      periods = [{ label: `${startDate} → ${endDate}`, startDate: start, endDate: end, isCustom: true }];
+    } else if (month && year) {
+      const { startDate: s, endDate: e } = getMonthDateRange(month, year);
+      periods = [{ label: `${MONTH_NAMES[parseInt(month) - 1]} ${year}`, startDate: s, endDate: e, month: parseInt(month), year: parseInt(year) }];
+    } else if (year) {
+      periods = Array.from({ length: 12 }, (_, i) => {
+        const { startDate: s, endDate: e } = getMonthDateRange(i + 1, year);
+        return { label: MONTH_NAMES[i], startDate: s, endDate: e, month: i + 1, year: parseInt(year) };
+      });
+    } else {
+      return res.status(400).json({ success: false, message: 'Provide year, month+year, or startDate+endDate' });
+    }
+
+    const periodData = await Promise.all(periods.map(async (period) => {
+      const createdAtFilter = { $gte: period.startDate, $lte: period.endDate };
+
+      const [revenueData, salaryData, completedOrders, totalOrders] = await Promise.all([
+        Payment.aggregate([
+          { $match: { status: 'paid', createdAt: createdAtFilter } },
+          { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]),
+        // For monthly/yearly: match by month+year; for custom: match by createdAt
+        period.isCustom
+          ? Salary.aggregate([
+              { $match: { createdAt: createdAtFilter } },
+              { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
+            ])
+          : period.month && period.year
+            ? Salary.aggregate([
+                { $match: { month: period.month, year: period.year } },
+                { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
+              ])
+            : Promise.resolve([]),
+        Order.countDocuments({ status: 'completed', createdAt: createdAtFilter }),
+        Order.countDocuments({ createdAt: createdAtFilter }),
+      ]);
+
+      const revenue      = revenueData[0]?.total  || 0;
+      const salaryTotal  = salaryData[0]?.total   || 0;
+      const salaryPaid   = salaryData[0]?.paid    || 0;
+      const salaryUnpaid = salaryData[0]?.unpaid  || 0;
+      const profit       = revenue - salaryTotal;
+
+      return {
+        label:          period.label,
+        revenue,
+        salaryTotal,
+        salaryPaid,
+        salaryUnpaid,
+        profit,
+        profitMargin:   revenue > 0 ? Math.round((profit / revenue) * 100) : 0,
+        completedOrders,
+        totalOrders,
+        avgOrderValue:  completedOrders > 0 ? Math.round(revenue / completedOrders) : 0,
+      };
+    }));
+
+    const totalRevenue    = periodData.reduce((s, p) => s + p.revenue,    0);
+    const totalSalaries   = periodData.reduce((s, p) => s + p.salaryTotal, 0);
+    const totalProfit     = totalRevenue - totalSalaries;
+    const totalOrders     = periodData.reduce((s, p) => s + p.totalOrders,     0);
+    const totalCompleted  = periodData.reduce((s, p) => s + p.completedOrders, 0);
+
+    res.json({
+      success: true,
+      periods: periodData,
+      summary: {
+        totalRevenue,
+        totalSalaries,
+        totalProfit,
+        profitMargin: totalRevenue > 0 ? Math.round((totalProfit / totalRevenue) * 100) : 0,
+        totalOrders,
+        totalCompleted,
+      }
+    });
+  } catch (error) {
+    console.error('getFinancialReport Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
