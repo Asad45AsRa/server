@@ -29,6 +29,7 @@ const {
   getWorkersPerformance,
   getHRReport,
   getFinancialReport,
+  deleteUser,
 } = require('../controllers/adminController');
 
 router.use(protect);
@@ -75,5 +76,6 @@ router.get('/reports/products-performance', getProductsPerformance);
 router.get('/reports/workers-performance', getWorkersPerformance);
 router.get('/reports/hr', getHRReport);
 router.get('/reports/financial', getFinancialReport);
+router.delete('/users/:id', deleteUser);
 
 module.exports = router;

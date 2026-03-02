@@ -463,7 +463,7 @@ exports.getProductsPerformance = async (req, res) => {
 
     if (startDate && endDate) {
       const start = new Date(startDate); start.setHours(0, 0, 0, 0);
-      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      const end = new Date(endDate); end.setHours(23, 59, 59, 999);
       matchQuery.createdAt = { $gte: start, $lte: end };
     }
 
@@ -486,8 +486,8 @@ exports.getProductsPerformance = async (req, res) => {
           };
         }
         productMap[key].quantitySold += item.quantity || 1;
-        productMap[key].revenue     += (item.price || 0) * (item.quantity || 1);
-        productMap[key].orderCount  += 1;
+        productMap[key].revenue += (item.price || 0) * (item.quantity || 1);
+        productMap[key].orderCount += 1;
         totalItemsSold += item.quantity || 1;
       });
     });
@@ -499,10 +499,10 @@ exports.getProductsPerformance = async (req, res) => {
       success: true,
       products,
       summary: {
-        totalProducts:  products.length,
+        totalProducts: products.length,
         totalItemsSold,
-        totalRevenue:   products.reduce((s, p) => s + p.revenue, 0),
-        totalOrders:    orders.length,
+        totalRevenue: products.reduce((s, p) => s + p.revenue, 0),
+        totalOrders: orders.length,
       }
     });
   } catch (error) {
@@ -515,20 +515,20 @@ exports.getWorkersPerformance = async (req, res) => {
   try {
     const { startDate, endDate, month, year } = req.query;
 
-    let orderDateFilter   = {};
-    let attDateFilter     = {};
-    let salaryFilter      = {};
+    let orderDateFilter = {};
+    let attDateFilter = {};
+    let salaryFilter = {};
 
     if (month && year) {
       const { startDate: s, endDate: e } = getMonthDateRange(month, year);
       orderDateFilter = { createdAt: { $gte: s, $lte: e } };
-      attDateFilter   = { date:      { $gte: s, $lte: e } };
-      salaryFilter    = { month: parseInt(month), year: parseInt(year) };
+      attDateFilter = { date: { $gte: s, $lte: e } };
+      salaryFilter = { month: parseInt(month), year: parseInt(year) };
     } else if (startDate && endDate) {
       const start = new Date(startDate); start.setHours(0, 0, 0, 0);
-      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      const end = new Date(endDate); end.setHours(23, 59, 59, 999);
       orderDateFilter = { createdAt: { $gte: start, $lte: end } };
-      attDateFilter   = { date:      { $gte: start, $lte: end } };
+      attDateFilter = { date: { $gte: start, $lte: end } };
     }
 
     const [workers, orders, attendanceRecords, salaries] = await Promise.all([
@@ -544,17 +544,17 @@ exports.getWorkersPerformance = async (req, res) => {
     const workerStats = workers.map(worker => {
       const wId = worker._id.toString();
 
-      const ordersAsWaiter   = orders.filter(o => o.waiterId?.toString()      === wId).length;
-      const ordersAsChef     = orders.filter(o => o.chefId?.toString()        === wId).length;
+      const ordersAsWaiter = orders.filter(o => o.waiterId?.toString() === wId).length;
+      const ordersAsChef = orders.filter(o => o.chefId?.toString() === wId).length;
       const ordersAsDelivery = orders.filter(o => o.deliveryBoyId?.toString() === wId).length;
-      const ordersAsCashier  = orders.filter(o => o.cashierId?.toString()     === wId).length;
+      const ordersAsCashier = orders.filter(o => o.cashierId?.toString() === wId).length;
 
       const workerAtt = attendanceRecords.filter(a => a.userId?.toString() === wId);
-      const presentDays  = workerAtt.filter(a => a.status === 'present').length;
-      const absentDays   = workerAtt.filter(a => a.status === 'absent').length;
-      const halfDays     = workerAtt.filter(a => a.status === 'half_day').length;
-      const leaveDays    = workerAtt.filter(a => a.status === 'leave').length;
-      const totalHours   = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      const presentDays = workerAtt.filter(a => a.status === 'present').length;
+      const absentDays = workerAtt.filter(a => a.status === 'absent').length;
+      const halfDays = workerAtt.filter(a => a.status === 'half_day').length;
+      const leaveDays = workerAtt.filter(a => a.status === 'leave').length;
+      const totalHours = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
       const totalRecorded = workerAtt.length;
       const attendanceRate = totalRecorded > 0
         ? Math.round(((presentDays + halfDays * 0.5) / totalRecorded) * 100) : 0;
@@ -562,32 +562,32 @@ exports.getWorkersPerformance = async (req, res) => {
       const salary = salaries.find(s => s.userId?.toString() === wId);
 
       return {
-        _id:                 worker._id,
-        name:                worker.name,
-        role:                worker.role,
-        email:               worker.email,
-        phone:               worker.phone,
-        branch:              worker.branchId?.name || 'N/A',
-        isActive:            worker.isActive,
-        isApproved:          worker.isApproved,
+        _id: worker._id,
+        name: worker.name,
+        role: worker.role,
+        email: worker.email,
+        phone: worker.phone,
+        branch: worker.branchId?.name || 'N/A',
+        isActive: worker.isActive,
+        isApproved: worker.isApproved,
         ordersAsWaiter,
         ordersAsChef,
         ordersAsDelivery,
         ordersAsCashier,
-        totalOrdersHandled:  ordersAsWaiter + ordersAsChef + ordersAsDelivery + ordersAsCashier,
+        totalOrdersHandled: ordersAsWaiter + ordersAsChef + ordersAsDelivery + ordersAsCashier,
         attendance: {
           presentDays, absentDays, halfDays, leaveDays,
-          totalHours:   Math.round(totalHours * 10) / 10,
+          totalHours: Math.round(totalHours * 10) / 10,
           totalRecorded,
           attendanceRate,
         },
         salary: salary ? {
           totalSalary: salary.totalSalary,
-          baseSalary:  salary.baseSalary,
-          bonus:       salary.bonus,
-          deductions:  salary.deductions,
-          isPaid:      salary.isPaid,
-          paidDate:    salary.paidDate,
+          baseSalary: salary.baseSalary,
+          bonus: salary.bonus,
+          deductions: salary.deductions,
+          isPaid: salary.isPaid,
+          paidDate: salary.paidDate,
         } : null,
       };
     });
@@ -617,53 +617,53 @@ exports.getHRReport = async (req, res) => {
     ]);
 
     const hrData = workers.map(worker => {
-      const wId      = worker._id.toString();
+      const wId = worker._id.toString();
       const workerAtt = attendanceRecords.filter(a => a.userId?.toString() === wId);
-      const salary    = salaries.find(s => s.userId?.toString() === wId);
+      const salary = salaries.find(s => s.userId?.toString() === wId);
 
-      const present      = workerAtt.filter(a => a.status === 'present').length;
-      const absent       = workerAtt.filter(a => a.status === 'absent').length;
-      const halfDay      = workerAtt.filter(a => a.status === 'half_day').length;
-      const leave        = workerAtt.filter(a => a.status === 'leave').length;
-      const totalHours   = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      const present = workerAtt.filter(a => a.status === 'present').length;
+      const absent = workerAtt.filter(a => a.status === 'absent').length;
+      const halfDay = workerAtt.filter(a => a.status === 'half_day').length;
+      const leave = workerAtt.filter(a => a.status === 'leave').length;
+      const totalHours = workerAtt.reduce((s, a) => s + (a.hoursWorked || 0), 0);
       const totalRecorded = workerAtt.length;
       const attRate = totalRecorded > 0
         ? Math.round(((present + halfDay * 0.5) / totalRecorded) * 100) : 0;
 
       return {
-        _id:       worker._id,
-        name:      worker.name,
-        role:      worker.role,
-        branch:    worker.branchId?.name || 'N/A',
-        wageType:  worker.wageType,
-        isActive:  worker.isActive,
+        _id: worker._id,
+        name: worker.name,
+        role: worker.role,
+        branch: worker.branchId?.name || 'N/A',
+        wageType: worker.wageType,
+        isActive: worker.isActive,
         isApproved: worker.isApproved,
         attendance: { present, absent, halfDay, leave, totalHours: Math.round(totalHours), totalRecorded, attRate },
         salary: salary ? {
-          baseSalary:  salary.baseSalary,
-          bonus:       salary.bonus,
-          deductions:  salary.deductions,
+          baseSalary: salary.baseSalary,
+          bonus: salary.bonus,
+          deductions: salary.deductions,
           totalSalary: salary.totalSalary,
-          isPaid:      salary.isPaid,
-          paidDate:    salary.paidDate,
+          isPaid: salary.isPaid,
+          paidDate: salary.paidDate,
         } : null,
       };
     });
 
-    const totalPaid   = salaries.filter(s => s.isPaid ).reduce((sum, s) => sum + s.totalSalary, 0);
+    const totalPaid = salaries.filter(s => s.isPaid).reduce((sum, s) => sum + s.totalSalary, 0);
     const totalUnpaid = salaries.filter(s => !s.isPaid).reduce((sum, s) => sum + s.totalSalary, 0);
     const totalPresent = attendanceRecords.filter(a => a.status === 'present').length;
-    const totalAbsent  = attendanceRecords.filter(a => a.status === 'absent').length;
+    const totalAbsent = attendanceRecords.filter(a => a.status === 'absent').length;
     const totalHoursAll = attendanceRecords.reduce((s, a) => s + (a.hoursWorked || 0), 0);
 
     res.json({
       success: true,
       hrData,
       summary: {
-        totalWorkers:        workers.length,
-        totalPaidSalaries:   totalPaid,
+        totalWorkers: workers.length,
+        totalPaidSalaries: totalPaid,
         totalUnpaidSalaries: totalUnpaid,
-        salaryGenerated:     salaries.length,
+        salaryGenerated: salaries.length,
         totalPresent,
         totalAbsent,
         totalHours: Math.round(totalHoursAll),
@@ -681,15 +681,15 @@ exports.getFinancialReport = async (req, res) => {
     const { year, month, startDate, endDate } = req.query;
 
     const MONTH_NAMES = [
-      'January','February','March','April','May','June',
-      'July','August','September','October','November','December'
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
     ];
 
     let periods = [];
 
     if (startDate && endDate) {
       const start = new Date(startDate); start.setHours(0, 0, 0, 0);
-      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      const end = new Date(endDate); end.setHours(23, 59, 59, 999);
       periods = [{ label: `${startDate} → ${endDate}`, startDate: start, endDate: end, isCustom: true }];
     } else if (month && year) {
       const { startDate: s, endDate: e } = getMonthDateRange(month, year);
@@ -714,44 +714,44 @@ exports.getFinancialReport = async (req, res) => {
         // For monthly/yearly: match by month+year; for custom: match by createdAt
         period.isCustom
           ? Salary.aggregate([
-              { $match: { createdAt: createdAtFilter } },
-              { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
-            ])
+            { $match: { createdAt: createdAtFilter } },
+            { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
+          ])
           : period.month && period.year
             ? Salary.aggregate([
-                { $match: { month: period.month, year: period.year } },
-                { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
-              ])
+              { $match: { month: period.month, year: period.year } },
+              { $group: { _id: null, paid: { $sum: { $cond: ['$isPaid', '$totalSalary', 0] } }, unpaid: { $sum: { $cond: ['$isPaid', 0, '$totalSalary'] } }, total: { $sum: '$totalSalary' } } }
+            ])
             : Promise.resolve([]),
         Order.countDocuments({ status: 'completed', createdAt: createdAtFilter }),
         Order.countDocuments({ createdAt: createdAtFilter }),
       ]);
 
-      const revenue      = revenueData[0]?.total  || 0;
-      const salaryTotal  = salaryData[0]?.total   || 0;
-      const salaryPaid   = salaryData[0]?.paid    || 0;
-      const salaryUnpaid = salaryData[0]?.unpaid  || 0;
-      const profit       = revenue - salaryTotal;
+      const revenue = revenueData[0]?.total || 0;
+      const salaryTotal = salaryData[0]?.total || 0;
+      const salaryPaid = salaryData[0]?.paid || 0;
+      const salaryUnpaid = salaryData[0]?.unpaid || 0;
+      const profit = revenue - salaryTotal;
 
       return {
-        label:          period.label,
+        label: period.label,
         revenue,
         salaryTotal,
         salaryPaid,
         salaryUnpaid,
         profit,
-        profitMargin:   revenue > 0 ? Math.round((profit / revenue) * 100) : 0,
+        profitMargin: revenue > 0 ? Math.round((profit / revenue) * 100) : 0,
         completedOrders,
         totalOrders,
-        avgOrderValue:  completedOrders > 0 ? Math.round(revenue / completedOrders) : 0,
+        avgOrderValue: completedOrders > 0 ? Math.round(revenue / completedOrders) : 0,
       };
     }));
 
-    const totalRevenue    = periodData.reduce((s, p) => s + p.revenue,    0);
-    const totalSalaries   = periodData.reduce((s, p) => s + p.salaryTotal, 0);
-    const totalProfit     = totalRevenue - totalSalaries;
-    const totalOrders     = periodData.reduce((s, p) => s + p.totalOrders,     0);
-    const totalCompleted  = periodData.reduce((s, p) => s + p.completedOrders, 0);
+    const totalRevenue = periodData.reduce((s, p) => s + p.revenue, 0);
+    const totalSalaries = periodData.reduce((s, p) => s + p.salaryTotal, 0);
+    const totalProfit = totalRevenue - totalSalaries;
+    const totalOrders = periodData.reduce((s, p) => s + p.totalOrders, 0);
+    const totalCompleted = periodData.reduce((s, p) => s + p.completedOrders, 0);
 
     res.json({
       success: true,
@@ -767,6 +767,24 @@ exports.getFinancialReport = async (req, res) => {
     });
   } catch (error) {
     console.error('getFinancialReport Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.deleteUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.role === 'admin')
+      return res.status(403).json({ success: false, message: 'Admin ko delete nahi kar sakte' });
+
+    await User.findByIdAndUpdate(req.params.id, {
+      isActive: false,
+      isApproved: false
+    });
+
+    res.json({ success: true, message: `${user.name} ka login band kar diya gaya` });
+  } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
