@@ -37,7 +37,7 @@ exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
     const orders = await Order.find({ branchId, status: 'pending' })
-      .populate('waiterId', 'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .sort({ createdAt: 1 })
       .lean();
@@ -48,17 +48,30 @@ exports.getPendingOrders = async (req, res) => {
   }
 };
 
+// ✅ UPDATED: updatedByWaiter flag bhi return hota hai
+// Chef ke "My Orders" mein woh orders dikhti hain jo accepted/preparing/ready hain
+// Agar koi order updatedByWaiter = true hai to chef ko badge dikhta hai
+
 exports.getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({
       chefId: req.user._id,
       status: { $in: ['accepted', 'preparing', 'ready'] },
     })
-      .populate('waiterId', 'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .sort({ acceptedAt: 1 })
       .lean();
-    res.json({ success: true, orders, count: orders.length });
+
+    // ✅ updatedByWaiter flag ensure karo — falsy default
+    const ordersWithFlag = orders.map(o => ({
+      ...o,
+      updatedByWaiter:  o.updatedByWaiter  || false,
+      waiterUpdatedAt:  o.waiterUpdatedAt  || null,
+      waiterUpdatedBy:  o.waiterUpdatedBy  || null,
+    }));
+
+    res.json({ success: true, orders: ordersWithFlag, count: ordersWithFlag.length });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -83,9 +96,9 @@ exports.acceptOrder = async (req, res) => {
       await notificationService.sendOrderNotification(notifyId, order.orderNumber, 'accepted');
 
     const populated = await Order.findById(order._id)
-      .populate('waiterId', 'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId', 'name');
+      .populate('chefId',        'name');
 
     res.json({ success: true, order: populated, message: 'Order accepted successfully' });
   } catch (error) {
@@ -95,10 +108,6 @@ exports.acceptOrder = async (req, res) => {
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  UPDATE ORDER STATUS
-//
-//  ✅ KEY CHANGE: Jab status → 'ready' AND orderType === 'delivery' AND
-//  deliveryBoyId === null → tamam delivery boys ko Socket.IO se broadcast karo
-//  (Pehle waiterController mein pending pe broadcast hota tha — ab READY pe hoga)
 // ══════════════════════════════════════════════════════════════════════════════
 exports.updateOrderStatus = async (req, res) => {
   try {
@@ -124,7 +133,6 @@ exports.updateOrderStatus = async (req, res) => {
     if (status === 'ready' && !order.stockDeducted) {
       order.readyAt = new Date();
 
-      // ── Stock deduction ───────────────────────────────────────────────────
       const today    = new Date(); today.setHours(0, 0, 0, 0);
       const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
@@ -139,7 +147,7 @@ exports.updateOrderStatus = async (req, res) => {
       for (const item of order.items) {
         const orderQty = item.quantity || 1;
 
-        // ── COLD DRINK ────────────────────────────────────────────────────────
+        // ── COLD DRINK ──────────────────────────────────────────────────────
         if (item.isColdDrink && item.coldDrinkId && item.coldDrinkSizeId) {
           try {
             const drink = await ColdDrink.findById(item.coldDrinkId);
@@ -157,7 +165,7 @@ exports.updateOrderStatus = async (req, res) => {
           continue;
         }
 
-        // ── PRODUCT INGREDIENTS ───────────────────────────────────────────────
+        // ── PRODUCT INGREDIENTS ─────────────────────────────────────────────
         const Product = require('../models/Product');
         let ingredients = [];
 
@@ -202,7 +210,7 @@ exports.updateOrderStatus = async (req, res) => {
               );
 
               if (chefItem) {
-                const remaining = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
+                const remaining    = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
                 const actualDeduct = Math.min(ingredientQtyInInventoryUnit, Math.max(remaining, 0));
                 if (actualDeduct > 0) {
                   chefItem.usedQuantity += actualDeduct;
@@ -242,22 +250,18 @@ exports.updateOrderStatus = async (req, res) => {
 
       // ════════════════════════════════════════════════════════════════════════
       //  ✅ BROADCAST: Delivery order ready + koi delivery boy assign nahi
-      //  Sab delivery boys ko broadcast karo — jo claim kare woh le
       // ════════════════════════════════════════════════════════════════════════
       if (order.orderType === 'delivery' && !order.deliveryBoyId) {
         try {
           const io = req.app.get('io');
           if (io) {
             const branchIdStr = String(order.branchId);
-            const room = `branch-${branchIdStr}`;
-
-            // Populate for broadcast details
             const populatedForBroadcast = await Order.findById(order._id)
-              .populate('waiterId', 'name')
+              .populate('waiterId',     'name')
               .populate('items.itemId', 'name')
               .lean();
 
-            io.to(room).emit('new-unassigned-delivery', {
+            io.to(`branch-${branchIdStr}`).emit('new-unassigned-delivery', {
               orderId:         String(order._id),
               orderNumber:     order.orderNumber,
               customerName:    order.customerName,
@@ -265,21 +269,20 @@ exports.updateOrderStatus = async (req, res) => {
               deliveryAddress: order.deliveryAddress,
               total:           order.total,
               itemCount:       order.items.length,
-              items:           (populatedForBroadcast.items || []).map(i => ({
+              items: (populatedForBroadcast.items || []).map(i => ({
                 name:     i.itemId?.name || i.name || 'Item',
                 size:     i.size,
                 quantity: i.quantity,
               })),
-              readyAt:    new Date(),
-              branchId:   branchIdStr,
+              readyAt:  new Date(),
+              branchId: branchIdStr,
             });
 
             console.log(
-              `[Chef→Broadcast] ✅ Delivery order ${order.orderNumber} READY → unassigned → broadcast to ${room}`
+              `[Chef→Broadcast] ✅ Delivery order ${order.orderNumber} READY → unassigned → broadcast to branch-${branchIdStr}`
             );
           }
         } catch (broadcastErr) {
-          // Broadcast fail hone se order save affect na ho
           console.error('[Chef→Broadcast] Broadcast error (non-fatal):', broadcastErr.message);
         }
       }
@@ -287,15 +290,14 @@ exports.updateOrderStatus = async (req, res) => {
 
     await order.save();
 
-    // Notify waiter / delivery boy (agar assigned ho)
     const notifyId = order.waiterId || order.deliveryBoyId;
     if (notifyId)
       await notificationService.sendOrderNotification(notifyId, order.orderNumber, status);
 
     const populated = await Order.findById(order._id)
-      .populate('waiterId', 'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId', 'name');
+      .populate('chefId',        'name');
 
     res.json({ success: true, order: populated, message: `Order updated to ${status}` });
   } catch (error) {
@@ -450,8 +452,8 @@ exports.requestInventory = async (req, res) => {
     });
 
     const populated = await InventoryRequest.findById(request._id)
-      .populate('requestedBy', 'name role')
-      .populate('items.inventoryItemId', 'name unit currentStock');
+      .populate('requestedBy',             'name role')
+      .populate('items.inventoryItemId',   'name unit currentStock');
 
     res.status(201).json({ success: true, request: populated, message: 'Request submitted' });
   } catch (error) {
@@ -462,8 +464,8 @@ exports.requestInventory = async (req, res) => {
 exports.getMyRequests = async (req, res) => {
   try {
     const requests = await InventoryRequest.find({ requestedBy: req.user._id })
-      .populate('approvedBy', 'name')
-      .populate('issuedBy', 'name')
+      .populate('approvedBy',            'name')
+      .populate('issuedBy',              'name')
       .populate('items.inventoryItemId', 'name unit currentStock')
       .sort({ requestDate: -1 });
 

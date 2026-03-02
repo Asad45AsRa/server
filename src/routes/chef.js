@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middlewares/auth');
+const { protect }   = require('../middlewares/auth');
 const { checkRole } = require('../middlewares/roleCheck');
-const { UserRole } = require('../config/constants');
+const { UserRole }  = require('../config/constants');
+
 const {
   getPendingOrders,
   getMyOrders,
@@ -10,37 +11,35 @@ const {
   updateOrderStatus,
   getInventory,
   requestInventory,
-  getMyRequests, 
+  getMyRequests,
   getMyInventory,
   updateItemUsage,
   returnInventory,
   getMyReturnHistory,
   submitReturnRequest,
-  getMyReturnRequests
+  getMyReturnRequests,
 } = require('../controllers/chefController');
 
 router.use(protect);
 router.use(checkRole(UserRole.CHEF));
 
 // Orders
-router.get('/orders/pending', getPendingOrders);
-router.get('/orders/my-orders', getMyOrders);
-router.post('/orders/accept', acceptOrder);
-router.put('/orders/status', updateOrderStatus);
+router.get('/orders/pending',    getPendingOrders);
+router.get('/orders/my-orders',  getMyOrders);
+router.post('/orders/accept',    acceptOrder);
+router.put('/orders/status',     updateOrderStatus);
 
-// Inventory
-router.get('/inventory', getInventory);
-router.post('/inventory/request', requestInventory);
-router.get('/inventory/my-requests', getMyRequests);
+// Chef's own issued inventory
+router.get('/my-inventory',              getMyInventory);
+router.put('/my-inventory/use',          updateItemUsage);
+router.post('/my-inventory/return',      returnInventory);
+router.get('/my-inventory/history',      getMyReturnHistory);
 
-router.get('/my-inventory',         getMyInventory);
-router.put('/my-inventory/use',     updateItemUsage);
-router.post('/my-inventory/return', returnInventory);
-router.get('/my-inventory/history', getMyReturnHistory);
-router.get('/inventory',             getInventory);
-router.post('/inventory/request',    requestInventory);
-router.get('/inventory/my-requests', getMyRequests);
-router.post('/inventory/return-request',  submitReturnRequest);
-router.get('/inventory/return-requests',  getMyReturnRequests);
+// General inventory (view + request)
+router.get('/inventory',                 getInventory);
+router.post('/inventory/request',        requestInventory);
+router.get('/inventory/my-requests',     getMyRequests);
+router.post('/inventory/return-request', submitReturnRequest);
+router.get('/inventory/return-requests', getMyReturnRequests);
 
 module.exports = router;

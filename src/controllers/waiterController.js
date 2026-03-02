@@ -1,10 +1,10 @@
-const Order = require('../models/Order');
-const Product = require('../models/Product');
-const Deal = require('../models/Deal');
-const Inventory = require('../models/Inventory');
-const ColdDrink = require('../models/Colddrink');
-const Table = require('../models/Table');
-const User = require('../models/User');
+const Order         = require('../models/Order');
+const Product       = require('../models/Product');
+const Deal          = require('../models/Deal');
+const Inventory     = require('../models/Inventory');
+const ColdDrink     = require('../models/Colddrink');
+const Table         = require('../models/Table');
+const User          = require('../models/User');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
@@ -67,13 +67,11 @@ exports.getMenu = async (req, res) => {
 exports.getDeliveryBoys = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-
     const boys = await User.find({
       branchId,
       role: 'delivery',
       isApproved: true,
     }).select('name phone _id').lean();
-
     res.json({ success: true, deliveryBoys: boys });
   } catch (error) {
     console.error('Get delivery boys error:', error);
@@ -119,26 +117,13 @@ exports.getTables = async (req, res) => {
 };
 
 // ========== CREATE ORDER ==========
-// Supports: dine_in, takeaway, delivery
-//
-// ✅ UPDATED DELIVERY LOGIC:
-//   - Agar waiter ne deliveryBoyId diya → directly us ko assign karo (koi broadcast nahi)
-//   - Agar deliveryBoyId nahi diya → order unassigned banao, Chef ke "ready" karne ke
-//     baad chefController mein broadcast hoga (yahan nahi)
 
 exports.createOrder = async (req, res) => {
   try {
     const {
-      orderType,
-      tableNumber,
-      floor,
-      items,
-      customerName,
-      customerPhone,
-      deliveryAddress,
-      notes,
-      cashierNote,
-      deliveryBoyId,
+      orderType, tableNumber, floor, items,
+      customerName, customerPhone, deliveryAddress,
+      notes, cashierNote, deliveryBoyId,
     } = req.body;
 
     if (!items || items.length === 0) {
@@ -152,7 +137,6 @@ exports.createOrder = async (req, res) => {
       return { ...item, itemType: item.itemType || itemType };
     });
 
-    // ── Validation ──────────────────────────────────────────────────────────
     if (orderType === 'dine_in' && (!tableNumber || !floor)) {
       return res.status(400).json({
         success: false,
@@ -174,7 +158,6 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    // ── Cold drink stock check ──────────────────────────────────────────────
     for (const item of processedItems) {
       if (item.type === 'cold_drink') {
         const coldDrink = await ColdDrink.findOne({ 'sizes._id': item.itemId });
@@ -193,12 +176,10 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
-    // ── Build cashier note ─────────────────────────────────────────────────
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
-        const floorLabel = (floor || '').replace(/_/g, ' ');
-        finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${floorLabel})`;
+        finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${(floor || '').replace(/_/g, ' ')})`;
       } else if (orderType === 'takeaway') {
         finalCashierNote = `🥡 Takeaway — ${customerName}${customerPhone ? ' | ' + customerPhone : ''}`;
       } else if (orderType === 'delivery') {
@@ -207,15 +188,16 @@ exports.createOrder = async (req, res) => {
     }
 
     const orderData = {
-      orderNumber: generateOrderNumber(),
-      branchId:    req.user.branchId,
+      orderNumber:     generateOrderNumber(),
+      branchId:        req.user.branchId,
       orderType,
-      items:        processedItems,
+      items:           processedItems,
       subtotal, tax, total, estimatedTime,
-      waiterId:    req.user._id,
+      waiterId:        req.user._id,
       notes,
-      cashierNote: finalCashierNote,
-      status:      'pending',
+      cashierNote:     finalCashierNote,
+      status:          'pending',
+      updatedByWaiter: false,
     };
 
     if (orderType === 'dine_in') {
@@ -230,17 +212,11 @@ exports.createOrder = async (req, res) => {
 
     if (orderType === 'delivery') {
       orderData.deliveryAddress = deliveryAddress;
-      // ✅ Sirf tab assign karo jab waiter ne explicitly select kiya ho
-      if (deliveryBoyId) {
-        orderData.deliveryBoyId = deliveryBoyId;
-      }
-      // ❌ Agar nahi select kiya → deliveryBoyId null rahega
-      // ✅ Chef "ready" karega tab chefController mein broadcast hoga
+      if (deliveryBoyId) orderData.deliveryBoyId = deliveryBoyId;
     }
 
     const order = await Order.create(orderData);
 
-    // ── Auto-occupy table for dine_in ──────────────────────────────────────
     if (orderType === 'dine_in') {
       let table = await Table.findOne({ branchId: req.user.branchId, tableNumber, floor });
 
@@ -268,11 +244,8 @@ exports.createOrder = async (req, res) => {
     const populatedOrder = await Order.findById(order._id)
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name image');
+      .populate('items.itemId',  'name');
 
-    // ✅ NOTE: Unassigned delivery broadcast ab yahan NAHI hoga.
-    // Chef ke "ready" karne par chefController.updateOrderStatus mein hoga.
-    // Agar deliveryBoyId assign hua hai to notification socket se ja sakti hai (optional).
     if (orderType === 'delivery' && deliveryBoyId) {
       const io = req.app.get('io');
       if (io) {
@@ -318,9 +291,9 @@ exports.getMyOrders = async (req, res) => {
     }
 
     const orders = await Order.find(query)
-      .populate('chefId',       'name')
-      .populate('deliveryBoyId','name phone')
-      .populate('items.itemId', 'name')
+      .populate('chefId',        'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('items.itemId',  'name')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -332,6 +305,11 @@ exports.getMyOrders = async (req, res) => {
 };
 
 // ========== UPDATE ORDER ==========
+// ✅ KEY CHANGES:
+//   1. 'ready' status orders bhi edit ho sakti hain — status 'preparing' pe reset hogi
+//   2. updatedByWaiter = true  +  waiterUpdatedAt = now  set hota hai
+//   3. Socket.IO se chef ko real-time event 'order-updated-by-waiter' emit hoti hai
+//   4. Response mein statusReset: true aata hai jab ready → preparing
 
 exports.updateOrder = async (req, res) => {
   try {
@@ -349,13 +327,17 @@ exports.updateOrder = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to update this order' });
     }
 
-    const EDITABLE_STATUSES = ['pending', 'accepted', 'preparing'];
+    // ✅ 'ready' bhi ab editable — status reset ho kar 'preparing' ho jayegi
+    const EDITABLE_STATUSES = ['pending', 'accepted', 'preparing', 'ready'];
     if (!EDITABLE_STATUSES.includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: `Cannot update order with status: ${order.status}`,
+        message: `Cannot update order with status: ${order.status}. Slip print ho chuki hai.`,
       });
     }
+
+    const wasReady    = order.status === 'ready';
+    let   statusReset = false;
 
     if (items && items.length > 0) {
       const processedItems = items.map(item => {
@@ -367,12 +349,21 @@ exports.updateOrder = async (req, res) => {
         }
         return { ...item, itemType };
       });
+
       const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 0);
       order.items         = processedItems;
       order.subtotal      = subtotal;
       order.tax           = tax;
       order.total         = total;
       order.estimatedTime = calculateTotalTime(processedItems);
+
+      // ✅ Ready → preparing: chef dobara check kare
+      if (wasReady) {
+        order.status        = 'preparing';
+        order.stockDeducted = false;  // stock dobara deduct hogi jab ready ho
+        statusReset         = true;
+        console.log(`[WaiterUpdate] Order ${order.orderNumber}: ready → preparing`);
+      }
     } else if (items && items.length === 0) {
       return res.status(400).json({ success: false, message: 'Order must have at least one item' });
     }
@@ -380,16 +371,85 @@ exports.updateOrder = async (req, res) => {
     if (notes       !== undefined) order.notes       = notes;
     if (cashierNote !== undefined) order.cashierNote = cashierNote;
 
+    // ✅ Waiter update flags
+    order.updatedByWaiter = true;
+    order.waiterUpdatedAt = new Date();
+    order.waiterUpdatedBy = req.user.name || 'Waiter';
+
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name phone')
+      .populate('chefId',        'name')
       .populate('items.itemId',  'name');
 
-    res.json({ success: true, order: populatedOrder, message: 'Order updated successfully' });
+    // ══════════════════════════════════════════════════════════════════
+    //  ✅ SOCKET EMIT: Chef ko real-time notify karo
+    //  Event: 'order-updated-by-waiter'
+    //  Room:  'branch-{branchId}'
+    // ══════════════════════════════════════════════════════════════════
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const branchIdStr = String(order.branchId);
+
+        io.to(`branch-${branchIdStr}`).emit('order-updated-by-waiter', {
+          orderId:         String(order._id),
+          orderNumber:     order.orderNumber,
+          orderType:       order.orderType,
+          tableNumber:     order.tableNumber || null,
+          status:          order.status,
+          statusReset,
+          waiterName:      req.user.name || 'Waiter',
+          waiterUpdatedAt: order.waiterUpdatedAt,
+          total:           order.total,
+          itemCount:       order.items.length,
+          items: (populatedOrder.items || []).map(i => ({
+            name:     i.itemId?.name || i.name || 'Item',
+            size:     i.size || null,
+            quantity: i.quantity,
+          })),
+          message: statusReset
+            ? `⚠️ ${req.user.name || 'Waiter'} ne ready order update ki — dobara check karein!`
+            : `📝 ${req.user.name || 'Waiter'} ne order #${order.orderNumber} update kiya`,
+        });
+
+        console.log(`[WaiterUpdate] ✅ Socket emitted → branch-${branchIdStr}  order: ${order.orderNumber}`);
+      }
+    } catch (socketErr) {
+      console.error('[WaiterUpdate] Socket emit failed (non-fatal):', socketErr.message);
+    }
+
+    res.json({
+      success: true,
+      order:   populatedOrder,
+      statusReset,
+      message: statusReset
+        ? '✅ Order update ho gayi aur chef ko dobara bhej di gayi naye items ke liye!'
+        : '✅ Changes save ho gaye',
+    });
   } catch (error) {
     console.error('Update order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== ACKNOWLEDGE ORDER UPDATE ==========
+// Chef ne order dekh li → updatedByWaiter flag clear karo
+
+exports.acknowledgeOrderUpdate = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) return res.status(400).json({ success: false, message: 'orderId required' });
+
+    await Order.findByIdAndUpdate(orderId, {
+      updatedByWaiter: false,
+    });
+
+    res.json({ success: true, message: 'Update acknowledged' });
+  } catch (error) {
+    console.error('acknowledgeOrderUpdate error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -444,11 +504,11 @@ exports.getOrderSlip = async (req, res) => {
     }
 
     const slipData = {
-      orderNumber:  order.orderNumber,
-      orderType:    order.orderType,
-      tableNumber:  order.tableNumber,
-      floor:        order.floor?.replace(/_/g, ' '),
-      cashierNote:  order.cashierNote,
+      orderNumber: order.orderNumber,
+      orderType:   order.orderType,
+      tableNumber: order.tableNumber,
+      floor:       order.floor?.replace(/_/g, ' '),
+      cashierNote: order.cashierNote,
       items: order.items.map(item => ({
         name:     item.itemId?.name || item.name || 'Item',
         size:     item.size,
@@ -456,15 +516,15 @@ exports.getOrderSlip = async (req, res) => {
         price:    item.price,
         subtotal: item.price * item.quantity,
       })),
-      subtotal:   order.subtotal || order.total,
-      discount:   order.discount || 0,
-      tax:        order.tax || 0,
-      total:      order.total,
-      waiter:     order.waiterId?.name   || null,
-      deliveryBoy:order.deliveryBoyId?.name || null,
-      branchName: BRANCH_NAME,
-      createdAt:  order.createdAt,
-      status:     order.status,
+      subtotal:    order.subtotal || order.total,
+      discount:    order.discount || 0,
+      tax:         order.tax || 0,
+      total:       order.total,
+      waiter:      order.waiterId?.name    || null,
+      deliveryBoy: order.deliveryBoyId?.name || null,
+      branchName:  BRANCH_NAME,
+      createdAt:   order.createdAt,
+      status:      order.status,
     };
 
     res.json({ success: true, slipData });
@@ -527,14 +587,14 @@ exports.requestPrint = async (req, res) => {
     const slipData = {
       orderNumber:     order.orderNumber,
       orderType:       order.orderType,
-      tableNumber:     order.tableNumber   || null,
-      floor:           order.floor         ? order.floor.replace(/_/g, ' ') : null,
-      cashierNote:     order.cashierNote   || null,
-      customerName:    order.customerName  || null,
-      customerPhone:   order.customerPhone || null,
+      tableNumber:     order.tableNumber    || null,
+      floor:           order.floor          ? order.floor.replace(/_/g, ' ') : null,
+      cashierNote:     order.cashierNote    || null,
+      customerName:    order.customerName   || null,
+      customerPhone:   order.customerPhone  || null,
       deliveryAddress: order.deliveryAddress || null,
       deliveryBoy:     order.deliveryBoyId?.name || null,
-      waiter:          order.waiterId?.name || null,
+      waiter:          order.waiterId?.name  || null,
       items: (order.items || []).map(item => ({
         name:     item.itemId?.name || item.name || 'Item',
         size:     item.size     || null,
@@ -556,9 +616,7 @@ exports.requestPrint = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       const branchIdStr = String(order.branchId);
-      const room = `branch-${branchIdStr}`;
-
-      io.to(room).emit('print-order', {
+      io.to(`branch-${branchIdStr}`).emit('print-order', {
         orderId:     String(order._id),
         orderNumber: order.orderNumber,
         branchId:    branchIdStr,
@@ -566,8 +624,7 @@ exports.requestPrint = async (req, res) => {
         requestedBy: req.user.name || 'Waiter',
         requestedAt: new Date(),
       });
-
-      console.log(`[PrintRequest] ✅ Order ${order.orderNumber} → ${room}`);
+      console.log(`[PrintRequest] ✅ Order ${order.orderNumber} → branch-${branchIdStr}`);
     }
 
     res.json({
