@@ -30,6 +30,7 @@ const {
   getHRReport,
   getFinancialReport,
   deleteUser,
+  permanentDeleteUser
 } = require('../controllers/adminController');
 
 router.use(protect);
@@ -77,5 +78,6 @@ router.get('/reports/workers-performance', getWorkersPerformance);
 router.get('/reports/hr', getHRReport);
 router.get('/reports/financial', getFinancialReport);
 router.delete('/users/:id', deleteUser);
+router.delete('/users/:id/permanent', permanentDeleteUser);
 
 module.exports = router;

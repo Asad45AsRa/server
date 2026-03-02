@@ -789,4 +789,18 @@ exports.deleteUser = async (req, res) => {
   }
 };
 
+exports.permanentDeleteUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.role === 'admin')
+      return res.status(403).json({ success: false, message: 'Admin ko delete nahi kar sakte' });
+
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: `${user.name} permanently delete ho gaya` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
