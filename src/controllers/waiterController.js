@@ -137,6 +137,7 @@ exports.createOrder = async (req, res) => {
       return { ...item, itemType: item.itemType || itemType };
     });
 
+    // ✅ Dine-in: table + floor required
     if (orderType === 'dine_in' && (!tableNumber || !floor)) {
       return res.status(400).json({
         success: false,
@@ -144,19 +145,23 @@ exports.createOrder = async (req, res) => {
       });
     }
 
-    if ((orderType === 'takeaway' || orderType === 'delivery') && (!customerName || !customerPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Customer name and phone are required for takeaway/delivery orders',
-      });
+    // ✅ Delivery: name + phone + address — sab required
+    if (orderType === 'delivery') {
+      if (!customerName || !customerPhone) {
+        return res.status(400).json({
+          success: false,
+          message: 'Customer name and phone are required for delivery orders',
+        });
+      }
+      if (!deliveryAddress) {
+        return res.status(400).json({
+          success: false,
+          message: 'Delivery address is required for delivery orders',
+        });
+      }
     }
 
-    if (orderType === 'delivery' && !deliveryAddress) {
-      return res.status(400).json({
-        success: false,
-        message: 'Delivery address is required for delivery orders',
-      });
-    }
+    // ✅ Takeaway: name + phone optional — koi validation nahi
 
     for (const item of processedItems) {
       if (item.type === 'cold_drink') {
@@ -176,12 +181,15 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
+    // ✅ cashierNote auto-generate — optional fields gracefully handle karo
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
         finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${(floor || '').replace(/_/g, ' ')})`;
       } else if (orderType === 'takeaway') {
-        finalCashierNote = `🥡 Takeaway — ${customerName}${customerPhone ? ' | ' + customerPhone : ''}`;
+        const nameStr = customerName ? customerName : 'Walk-in';
+        const phoneStr = customerPhone ? ' | ' + customerPhone : '';
+        finalCashierNote = `🥡 Takeaway — ${nameStr}${phoneStr}`;
       } else if (orderType === 'delivery') {
         finalCashierNote = `🚚 Delivery — ${customerName} | ${customerPhone}`;
       }
@@ -205,9 +213,10 @@ exports.createOrder = async (req, res) => {
       orderData.floor = floor;
     }
 
+    // ✅ Takeaway/Delivery: sirf tab add karo jab value ho
     if (orderType === 'takeaway' || orderType === 'delivery') {
-      orderData.customerName = customerName;
-      orderData.customerPhone = customerPhone;
+      if (customerName)  orderData.customerName  = customerName;
+      if (customerPhone) orderData.customerPhone = customerPhone;
     }
 
     if (orderType === 'delivery') {
@@ -567,7 +576,6 @@ exports.deleteOrder = async (req, res) => {
     if (order.waiterId.toString() !== req.user._id.toString())
       return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
 
-    // ✅ 'pending' check — 'accepted' agar hai toh block karo (purani order)
     if (order.status !== 'pending')
       return res.status(400).json({ success: false, message: 'Sirf pending orders cancel ho sakti hain' });
 
