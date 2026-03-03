@@ -1,10 +1,10 @@
-const Order         = require('../models/Order');
-const Product       = require('../models/Product');
-const Deal          = require('../models/Deal');
-const Inventory     = require('../models/Inventory');
-const ColdDrink     = require('../models/Colddrink');
-const Table         = require('../models/Table');
-const User          = require('../models/User');
+const Order = require('../models/Order');
+const Product = require('../models/Product');
+const Deal = require('../models/Deal');
+const Inventory = require('../models/Inventory');
+const ColdDrink = require('../models/Colddrink');
+const Table = require('../models/Table');
+const User = require('../models/User');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
@@ -100,9 +100,9 @@ exports.getTables = async (req, res) => {
 
     const groupedTables = {
       ground_floor: [],
-      first_floor:  [],
+      first_floor: [],
       second_floor: [],
-      outdoor:      []
+      outdoor: []
     };
 
     tables.forEach(table => {
@@ -133,7 +133,7 @@ exports.createOrder = async (req, res) => {
     const processedItems = items.map(item => {
       let itemType = 'Product';
       if (item.type === 'cold_drink') itemType = 'Inventory';
-      else if (item.type === 'deal')  itemType = 'Deal';
+      else if (item.type === 'deal') itemType = 'Deal';
       return { ...item, itemType: item.itemType || itemType };
     });
 
@@ -188,25 +188,25 @@ exports.createOrder = async (req, res) => {
     }
 
     const orderData = {
-      orderNumber:     generateOrderNumber(),
-      branchId:        req.user.branchId,
+      orderNumber: generateOrderNumber(),
+      branchId: req.user.branchId,
       orderType,
-      items:           processedItems,
+      items: processedItems,
       subtotal, tax, total, estimatedTime,
-      waiterId:        req.user._id,
+      waiterId: req.user._id,
       notes,
-      cashierNote:     finalCashierNote,
-      status:          'pending',
+      cashierNote: finalCashierNote,
+      status: 'pending',
       updatedByWaiter: false,
     };
 
     if (orderType === 'dine_in') {
       orderData.tableNumber = tableNumber;
-      orderData.floor       = floor;
+      orderData.floor = floor;
     }
 
     if (orderType === 'takeaway' || orderType === 'delivery') {
-      orderData.customerName  = customerName;
+      orderData.customerName = customerName;
       orderData.customerPhone = customerPhone;
     }
 
@@ -236,27 +236,27 @@ exports.createOrder = async (req, res) => {
         });
       }
 
-      table.isOccupied     = true;
+      table.isOccupied = true;
       table.currentOrderId = order._id;
       await table.save();
     }
 
     const populatedOrder = await Order.findById(order._id)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     if (orderType === 'delivery' && deliveryBoyId) {
       const io = req.app.get('io');
       if (io) {
         io.to(`branch-${req.user.branchId}`).emit('delivery-assigned', {
-          orderId:         String(populatedOrder._id),
-          orderNumber:     populatedOrder.orderNumber,
+          orderId: String(populatedOrder._id),
+          orderNumber: populatedOrder.orderNumber,
           customerName,
           deliveryAddress,
           total,
-          deliveryBoyId:   String(deliveryBoyId),
-          assignedBy:      req.user.name || 'Waiter',
+          deliveryBoyId: String(deliveryBoyId),
+          assignedBy: req.user.name || 'Waiter',
         });
         console.log(`[Waiter] Delivery order ${populatedOrder.orderNumber} assigned to boy ${deliveryBoyId}`);
       }
@@ -264,7 +264,7 @@ exports.createOrder = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      order:   populatedOrder,
+      order: populatedOrder,
       message: orderType === 'delivery' && !deliveryBoyId
         ? 'Order created. Jab chef ready karega tab delivery boys ko notify kiya jayega.'
         : 'Order created successfully',
@@ -291,9 +291,9 @@ exports.getMyOrders = async (req, res) => {
     }
 
     const orders = await Order.find(query)
-      .populate('chefId',        'name')
+      .populate('chefId', 'name')
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name')
+      .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -313,127 +313,104 @@ exports.getMyOrders = async (req, res) => {
 
 exports.updateOrder = async (req, res) => {
   try {
-    const orderId = req.params.id;
-    const { items, notes, cashierNote } = req.body;
-
-    if (!orderId) {
-      return res.status(400).json({ success: false, message: 'Order ID is required' });
-    }
+    const { orderId } = req.params;
+    const { items }   = req.body;
 
     const order = await Order.findById(orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
-    if (order.waiterId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized to update this order' });
-    }
+    // Authorization: sirf apni order
+    if (order.waiterId.toString() !== req.user._id.toString())
+      return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
 
-    // ✅ 'ready' bhi ab editable — status reset ho kar 'preparing' ho jayegi
-    const EDITABLE_STATUSES = ['pending', 'accepted', 'preparing', 'ready'];
-    if (!EDITABLE_STATUSES.includes(order.status)) {
+    // ✅ 'accepted' bhi editable mana — legacy DB orders ke liye graceful fallback
+    //    Agar purani order DB mein 'accepted' hai toh use 'preparing' treat karo
+    const effectiveStatus = order.status === 'accepted' ? 'preparing' : order.status;
+    if (LOCKED_STATUSES.includes(effectiveStatus))
       return res.status(400).json({
         success: false,
-        message: `Cannot update order with status: ${order.status}. Slip print ho chuki hai.`,
-      });
-    }
-
-    const wasReady    = order.status === 'ready';
-    let   statusReset = false;
-
-    if (items && items.length > 0) {
-      const processedItems = items.map(item => {
-        let itemType = item.itemType;
-        if (!itemType) {
-          if (item.type === 'cold_drink') itemType = 'Inventory';
-          else if (item.type === 'deal')  itemType = 'Deal';
-          else                            itemType = 'Product';
-        }
-        return { ...item, itemType };
+        message: `${order.status} order edit nahi ho sakti`,
       });
 
-      const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 0);
-      order.items         = processedItems;
-      order.subtotal      = subtotal;
-      order.tax           = tax;
-      order.total         = total;
-      order.estimatedTime = calculateTotalTime(processedItems);
+    if (!items || items.length === 0)
+      return res.status(400).json({ success: false, message: 'Kam se kam ek item zaroori hai' });
 
-      // ✅ Ready → preparing: chef dobara check kare
-      if (wasReady) {
-        order.status        = 'preparing';
-        order.stockDeducted = false;  // stock dobara deduct hogi jab ready ho
-        statusReset         = true;
-        console.log(`[WaiterUpdate] Order ${order.orderNumber}: ready → preparing`);
-      }
-    } else if (items && items.length === 0) {
-      return res.status(400).json({ success: false, message: 'Order must have at least one item' });
-    }
+    // Recalculate total
+    let total = 0;
+    const enrichedItems = items.map(item => {
+      const price    = item.price    || 0;
+      const quantity = item.quantity || 1;
+      const subtotal = price * quantity;
+      total += subtotal;
+      return {
+        itemId:          item.itemId,
+        name:            item.name || 'Item',
+        size:            item.size || null,
+        quantity,
+        price,
+        subtotal,
+        type:            item.type        || 'product',
+        isColdDrink:     item.isColdDrink || false,
+        coldDrinkId:     item.coldDrinkId     || null,
+        coldDrinkSizeId: item.coldDrinkSizeId || null,
+      };
+    });
 
-    if (notes       !== undefined) order.notes       = notes;
-    if (cashierNote !== undefined) order.cashierNote = cashierNote;
+    // ✅ Ready ya delivered thi — chef ko wapas preparing pe reset karo
+    const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
 
-    // ✅ Waiter update flags
+    order.items    = enrichedItems;
+    order.total    = total;
+    order.subtotal = total;
+
+    // ✅ Waiter update flags — chef ko pata chale
     order.updatedByWaiter = true;
     order.waiterUpdatedAt = new Date();
     order.waiterUpdatedBy = req.user.name || 'Waiter';
 
+    let statusReset = false;
+    if (wasReadyOrDelivered) {
+      order.status        = 'preparing';
+      order.stockDeducted = false; // stock dobara deduct hogi jab ready hogi
+      statusReset         = true;
+    }
+
     await order.save();
 
-    const populatedOrder = await Order.findById(order._id)
+    const populated = await Order.findById(order._id)
       .populate('waiterId',      'name')
-      .populate('deliveryBoyId', 'name phone')
-      .populate('chefId',        'name')
-      .populate('items.itemId',  'name');
+      .populate('deliveryBoyId', 'name');
 
-    // ══════════════════════════════════════════════════════════════════
-    //  ✅ SOCKET EMIT: Chef ko real-time notify karo
-    //  Event: 'order-updated-by-waiter'
-    //  Room:  'branch-{branchId}'
-    // ══════════════════════════════════════════════════════════════════
+    // Notify chef via socket
     try {
       const io = req.app.get('io');
       if (io) {
-        const branchIdStr = String(order.branchId);
-
-        io.to(`branch-${branchIdStr}`).emit('order-updated-by-waiter', {
-          orderId:         String(order._id),
-          orderNumber:     order.orderNumber,
-          orderType:       order.orderType,
-          tableNumber:     order.tableNumber || null,
-          status:          order.status,
+        io.to(`branch-${String(order.branchId)}`).emit('order-updated', {
+          orderId:     String(order._id),
+          orderNumber: order.orderNumber,
+          updatedBy:   req.user.name,
           statusReset,
-          waiterName:      req.user.name || 'Waiter',
-          waiterUpdatedAt: order.waiterUpdatedAt,
-          total:           order.total,
-          itemCount:       order.items.length,
-          items: (populatedOrder.items || []).map(i => ({
-            name:     i.itemId?.name || i.name || 'Item',
-            size:     i.size || null,
-            quantity: i.quantity,
-          })),
-          message: statusReset
-            ? `⚠️ ${req.user.name || 'Waiter'} ne ready order update ki — dobara check karein!`
-            : `📝 ${req.user.name || 'Waiter'} ne order #${order.orderNumber} update kiya`,
+          newStatus:   order.status,
         });
-
-        console.log(`[WaiterUpdate] ✅ Socket emitted → branch-${branchIdStr}  order: ${order.orderNumber}`);
       }
-    } catch (socketErr) {
-      console.error('[WaiterUpdate] Socket emit failed (non-fatal):', socketErr.message);
+    } catch (e) {
+      console.warn('[updateOrder] Socket emit error (non-fatal):', e.message);
     }
 
     res.json({
       success: true,
-      order:   populatedOrder,
+      order:   populated,
       statusReset,
       message: statusReset
-        ? '✅ Order update ho gayi aur chef ko dobara bhej di gayi naye items ke liye!'
-        : '✅ Changes save ho gaye',
+        ? 'Order update ho gayi aur chef ko dobara bhej di gayi!'
+        : 'Order update ho gayi. Chef ko notify kar diya gaya.',
     });
   } catch (error) {
-    console.error('Update order error:', error);
+    console.error('updateOrder error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // ========== ACKNOWLEDGE ORDER UPDATE ==========
 // Chef ne order dekh li → updatedByWaiter flag clear karo
@@ -441,13 +418,15 @@ exports.updateOrder = async (req, res) => {
 exports.acknowledgeOrderUpdate = async (req, res) => {
   try {
     const { orderId } = req.body;
-    if (!orderId) return res.status(400).json({ success: false, message: 'orderId required' });
 
-    await Order.findByIdAndUpdate(orderId, {
-      updatedByWaiter: false,
-    });
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
-    res.json({ success: true, message: 'Update acknowledged' });
+    order.updatedByWaiter = false;
+    // waiterUpdatedAt/By history ke liye preserve
+    await order.save();
+
+    res.json({ success: true, message: 'Acknowledged' });
   } catch (error) {
     console.error('acknowledgeOrderUpdate error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -458,31 +437,34 @@ exports.acknowledgeOrderUpdate = async (req, res) => {
 
 exports.markDelivered = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const { orderId } = req.params;
 
-    if (order.waiterId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
-    if (order.status !== 'ready') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order must be in "ready" status to mark as delivered',
-      });
-    }
+    if (order.waiterId.toString() !== req.user._id.toString())
+      return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
+
+    if (order.status !== 'ready')
+      return res.status(400).json({ success: false, message: 'Sirf ready orders deliver ki ja sakti hain' });
 
     order.status      = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
-    const populatedOrder = await Order.findById(order._id)
-      .populate('waiterId',     'name')
-      .populate('items.itemId', 'name');
+    const populated = await Order.findById(order._id).populate('deliveryBoyId', 'name');
 
-    res.json({ success: true, order: populatedOrder, message: 'Order marked as delivered' });
+    try {
+      const io = req.app.get('io');
+      if (io)
+        io.to(`branch-${String(order.branchId)}`).emit('order-updated', {
+          orderId: String(order._id), newStatus: 'delivered',
+        });
+    } catch (e) { /* non-fatal */ }
+
+    res.json({ success: true, order: populated, message: 'Order delivered mark ho gayi' });
   } catch (error) {
-    console.error('Mark delivered error:', error);
+    console.error('markDelivered error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -492,10 +474,10 @@ exports.markDelivered = async (req, res) => {
 exports.getOrderSlip = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('waiterId',      'name')
-      .populate('cashierId',     'name')
+      .populate('waiterId', 'name')
+      .populate('cashierId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
@@ -505,26 +487,26 @@ exports.getOrderSlip = async (req, res) => {
 
     const slipData = {
       orderNumber: order.orderNumber,
-      orderType:   order.orderType,
+      orderType: order.orderType,
       tableNumber: order.tableNumber,
-      floor:       order.floor?.replace(/_/g, ' '),
+      floor: order.floor?.replace(/_/g, ' '),
       cashierNote: order.cashierNote,
       items: order.items.map(item => ({
-        name:     item.itemId?.name || item.name || 'Item',
-        size:     item.size,
+        name: item.itemId?.name || item.name || 'Item',
+        size: item.size,
         quantity: item.quantity,
-        price:    item.price,
+        price: item.price,
         subtotal: item.price * item.quantity,
       })),
-      subtotal:    order.subtotal || order.total,
-      discount:    order.discount || 0,
-      tax:         order.tax || 0,
-      total:       order.total,
-      waiter:      order.waiterId?.name    || null,
+      subtotal: order.subtotal || order.total,
+      discount: order.discount || 0,
+      tax: order.tax || 0,
+      total: order.total,
+      waiter: order.waiterId?.name || null,
       deliveryBoy: order.deliveryBoyId?.name || null,
-      branchName:  BRANCH_NAME,
-      createdAt:   order.createdAt,
-      status:      order.status,
+      branchName: BRANCH_NAME,
+      createdAt: order.createdAt,
+      status: order.status,
     };
 
     res.json({ success: true, slipData });
@@ -538,30 +520,24 @@ exports.getOrderSlip = async (req, res) => {
 
 exports.deleteOrder = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    const { orderId } = req.params;
 
-    if (order.waiterId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized to cancel this order' });
-    }
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
-    if (order.status !== 'pending') {
-      return res.status(400).json({ success: false, message: 'Cannot delete order after chef acceptance' });
-    }
+    if (order.waiterId.toString() !== req.user._id.toString())
+      return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
+
+    // ✅ 'pending' check — 'accepted' agar hai toh block karo (purani order)
+    if (order.status !== 'pending')
+      return res.status(400).json({ success: false, message: 'Sirf pending orders cancel ho sakti hain' });
 
     order.status = 'cancelled';
     await order.save();
 
-    if (order.tableNumber) {
-      await Table.findOneAndUpdate(
-        { branchId: req.user.branchId, tableNumber: order.tableNumber, floor: order.floor },
-        { isOccupied: false, currentOrderId: null }
-      );
-    }
-
-    res.json({ success: true, message: 'Order cancelled successfully' });
+    res.json({ success: true, message: 'Order cancel ho gayi' });
   } catch (error) {
-    console.error('Delete order error:', error);
+    console.error('deleteOrder error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -570,72 +546,62 @@ exports.deleteOrder = async (req, res) => {
 
 exports.requestPrint = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id)
+    const { orderId } = req.params;
+
+    const order = await Order.findById(orderId)
       .populate('waiterId',      'name')
-      .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name');
+      .populate('deliveryBoyId', 'name')
+      .lean();
 
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    const waiterId = order.waiterId?._id?.toString() || order.waiterId?.toString();
-    if (waiterId !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
+    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
     const slipData = {
       orderNumber:     order.orderNumber,
       orderType:       order.orderType,
-      tableNumber:     order.tableNumber    || null,
-      floor:           order.floor          ? order.floor.replace(/_/g, ' ') : null,
-      cashierNote:     order.cashierNote    || null,
-      customerName:    order.customerName   || null,
-      customerPhone:   order.customerPhone  || null,
+      tableNumber:     order.tableNumber     || null,
+      floor:           order.floor           || null,
+      customerName:    order.customerName    || null,
+      customerPhone:   order.customerPhone   || null,
       deliveryAddress: order.deliveryAddress || null,
       deliveryBoy:     order.deliveryBoyId?.name || null,
-      waiter:          order.waiterId?.name  || null,
+      waiter:          order.waiterId?.name      || null,
+      cashierNote:     order.cashierNote         || null,
       items: (order.items || []).map(item => ({
-        name:     item.itemId?.name || item.name || 'Item',
-        size:     item.size     || null,
-        quantity: item.quantity || 1,
-        price:    item.price    || 0,
-        subtotal: (item.price || 0) * (item.quantity || 1),
+        name:     item.name || 'Item',
+        size:     item.size || null,
+        quantity: item.quantity,
+        price:    item.price,
+        subtotal: item.subtotal ?? item.price * item.quantity,
       })),
-      subtotal:  order.subtotal || order.total,
-      discount:  order.discount || 0,
-      tax:       order.tax      || 0,
-      total:     order.total,
-      branchName: BRANCH_NAME,
-      createdAt:  order.createdAt,
-      status:     order.status,
-      printRequestedAt: new Date(),
-      printRequestedBy: req.user.name || 'Waiter',
+      subtotal:       order.subtotal || order.total,
+      discount:       order.discount || 0,
+      tax:            order.tax      || 0,
+      total:          order.total,
+      paymentMethod:  order.paymentMethod  || null,
+      receivedAmount: order.receivedAmount || 0,
+      changeAmount:   order.changeAmount   || 0,
+      createdAt:      order.createdAt,
+      paidAt:         order.paidAt || null,
     };
 
-    const io = req.app.get('io');
-    if (io) {
-      const branchIdStr = String(order.branchId);
-      io.to(`branch-${branchIdStr}`).emit('print-order', {
-        orderId:     String(order._id),
-        orderNumber: order.orderNumber,
-        branchId:    branchIdStr,
-        slipData,
-        requestedBy: req.user.name || 'Waiter',
-        requestedAt: new Date(),
-      });
-      console.log(`[PrintRequest] ✅ Order ${order.orderNumber} → branch-${branchIdStr}`);
+    try {
+      const io = req.app.get('io');
+      if (io)
+        io.to(`branch-${String(order.branchId)}`).emit('print-order', {
+          orderId:     String(order._id),
+          orderNumber: order.orderNumber,
+          slipData,
+        });
+    } catch (e) {
+      console.warn('[requestPrint] Socket emit error (non-fatal):', e.message);
     }
 
-    res.json({
-      success: true,
-      message: 'Print request sent! Desktop par automatically print ho jayega.',
-      orderNumber: order.orderNumber,
-    });
+    res.json({ success: true, message: 'Print request bhej di gayi' });
   } catch (error) {
     console.error('requestPrint error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 module.exports = exports;

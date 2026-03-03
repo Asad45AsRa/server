@@ -48,15 +48,12 @@ exports.getPendingOrders = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: updatedByWaiter flag bhi return hota hai
-// Chef ke "My Orders" mein woh orders dikhti hain jo accepted/preparing/ready hain
-// Agar koi order updatedByWaiter = true hai to chef ko badge dikhta hai
-
+// ✅ UPDATED: 'accepted' status hata diya — sirf preparing/ready dikhte hain
 exports.getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({
       chefId: req.user._id,
-      status: { $in: ['accepted', 'preparing', 'ready'] },
+      status: { $in: ['preparing', 'ready'] },   // ✅ 'accepted' removed
     })
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
@@ -77,6 +74,7 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
+// ✅ UPDATED: Accept karte hi status 'preparing' ho jata hai — 'accepted' step khatam
 exports.acceptOrder = async (req, res) => {
   try {
     const { orderId } = req.body;
@@ -86,21 +84,23 @@ exports.acceptOrder = async (req, res) => {
     if (order.status !== 'pending')
       return res.status(400).json({ success: false, message: 'Order is not pending' });
 
-    order.status     = 'accepted';
-    order.chefId     = req.user._id;
-    order.acceptedAt = new Date();
+    // ✅ Seedha 'preparing' — 'accepted' bypass ho gaya
+    order.status      = 'preparing';
+    order.chefId      = req.user._id;
+    order.acceptedAt  = new Date();   // timestamp rakh lo reference ke liye
+    order.preparingAt = new Date();   // ✅ preparing timestamp bhi set
     await order.save();
 
     const notifyId = order.waiterId || order.deliveryBoyId;
     if (notifyId)
-      await notificationService.sendOrderNotification(notifyId, order.orderNumber, 'accepted');
+      await notificationService.sendOrderNotification(notifyId, order.orderNumber, 'preparing');
 
     const populated = await Order.findById(order._id)
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .populate('chefId',        'name');
 
-    res.json({ success: true, order: populated, message: 'Order accepted successfully' });
+    res.json({ success: true, order: populated, message: 'Order accepted and preparing started' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -125,6 +125,7 @@ exports.updateOrderStatus = async (req, res) => {
     if (additionalDelay && parseInt(additionalDelay) > 0)
       order.additionalDelay = (order.additionalDelay || 0) + parseInt(additionalDelay);
 
+    // 'preparing' timestamp — agar kabhi directly set ho
     if (status === 'preparing') order.preparingAt = new Date();
 
     // ════════════════════════════════════════════════════════
