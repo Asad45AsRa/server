@@ -313,100 +313,139 @@ exports.getMyOrders = async (req, res) => {
 
 exports.updateOrder = async (req, res) => {
   try {
-    const { orderId } = req.params;
-    const { items }   = req.body;
+    const orderId = req.params.id;
+    const { items, notes, cashierNote } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'Order ID required hai' });
+    }
 
     const order = await Order.findById(orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order nahi mili' });
+    }
 
-    // Authorization: sirf apni order
-    if (order.waiterId.toString() !== req.user._id.toString())
+    // ✅ Sirf apni order edit kar sakta hai waiter
+    if (order.waiterId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
+    }
 
-    // ✅ 'accepted' bhi editable mana — legacy DB orders ke liye graceful fallback
-    //    Agar purani order DB mein 'accepted' hai toh use 'preparing' treat karo
-    const effectiveStatus = order.status === 'accepted' ? 'preparing' : order.status;
-    if (LOCKED_STATUSES.includes(effectiveStatus))
+    // ✅ Flow: pending → preparing → ready → delivered → completed
+    // completed aur cancelled pe lock — baaki sab editable
+    const EDITABLE_STATUSES = ['pending', 'preparing', 'ready', 'delivered'];
+    if (!EDITABLE_STATUSES.includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: `${order.status} order edit nahi ho sakti`,
+        message: `${order.status} order edit nahi ho sakti — slip print ho chuki hai`,
       });
+    }
 
-    if (!items || items.length === 0)
+    // Items update
+    if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Kam se kam ek item zaroori hai' });
+    }
 
-    // Recalculate total
-    let total = 0;
-    const enrichedItems = items.map(item => {
-      const price    = item.price    || 0;
-      const quantity = item.quantity || 1;
-      const subtotal = price * quantity;
-      total += subtotal;
+    const processedItems = items.map(item => {
+      let itemType = item.itemType;
+      if (!itemType) {
+        if (item.type === 'cold_drink') itemType = 'Inventory';
+        else if (item.type === 'deal') itemType = 'Deal';
+        else itemType = 'Product';
+      }
       return {
-        itemId:          item.itemId,
-        name:            item.name || 'Item',
-        size:            item.size || null,
-        quantity,
-        price,
-        subtotal,
-        type:            item.type        || 'product',
-        isColdDrink:     item.isColdDrink || false,
-        coldDrinkId:     item.coldDrinkId     || null,
+        itemId: String(item.itemId?._id || item.itemId || ''),
+        name: item.name || 'Item',
+        size: item.size || null,
+        quantity: Number(item.quantity) || 1,
+        price: Number(item.price) || 0,
+        subtotal: (Number(item.price) || 0) * (Number(item.quantity) || 1),
+        type: item.type || 'product',
+        itemType,
+        isColdDrink: item.isColdDrink || false,
+        coldDrinkId: item.coldDrinkId || null,
         coldDrinkSizeId: item.coldDrinkSizeId || null,
       };
     });
 
-    // ✅ Ready ya delivered thi — chef ko wapas preparing pe reset karo
-    const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
+    const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount || 0, 0);
 
-    order.items    = enrichedItems;
-    order.total    = total;
-    order.subtotal = total;
+    order.items = processedItems;
+    order.subtotal = subtotal;
+    order.tax = tax;
+    order.total = total;
+    order.estimatedTime = calculateTotalTime(processedItems);
+
+    if (notes !== undefined) order.notes = notes;
+    if (cashierNote !== undefined) order.cashierNote = cashierNote;
 
     // ✅ Waiter update flags — chef ko pata chale
     order.updatedByWaiter = true;
     order.waiterUpdatedAt = new Date();
     order.waiterUpdatedBy = req.user.name || 'Waiter';
 
+    // ✅ ready ya delivered thi — chef ko wapas bhejo preparing pe
+    const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
     let statusReset = false;
+
     if (wasReadyOrDelivered) {
-      order.status        = 'preparing';
-      order.stockDeducted = false; // stock dobara deduct hogi jab ready hogi
-      statusReset         = true;
+      order.status = 'preparing';
+      order.stockDeducted = false; // stock dobara deduct hogi jab chef ready kare
+      statusReset = true;
+      console.log(`[WaiterUpdate] Order ${order.orderNumber}: ${order.status} → preparing`);
     }
 
     await order.save();
 
-    const populated = await Order.findById(order._id)
-      .populate('waiterId',      'name')
-      .populate('deliveryBoyId', 'name');
+    const populatedOrder = await Order.findById(order._id)
+      .populate('waiterId', 'name')
+      .populate('deliveryBoyId', 'name phone')
+      .populate('chefId', 'name')
+      .populate('items.itemId', 'name');
 
-    // Notify chef via socket
+    // ✅ Chef ko real-time notify karo via Socket.IO
     try {
       const io = req.app.get('io');
       if (io) {
-        io.to(`branch-${String(order.branchId)}`).emit('order-updated', {
-          orderId:     String(order._id),
+        const branchIdStr = String(order.branchId);
+
+        io.to(`branch-${branchIdStr}`).emit('order-updated-by-waiter', {
+          orderId: String(order._id),
           orderNumber: order.orderNumber,
-          updatedBy:   req.user.name,
+          orderType: order.orderType,
+          tableNumber: order.tableNumber || null,
+          status: order.status,
           statusReset,
-          newStatus:   order.status,
+          waiterName: req.user.name || 'Waiter',
+          waiterUpdatedAt: order.waiterUpdatedAt,
+          total: order.total,
+          itemCount: order.items.length,
+          items: (populatedOrder.items || []).map(i => ({
+            name: i.itemId?.name || i.name || 'Item',
+            size: i.size || null,
+            quantity: i.quantity,
+          })),
+          message: statusReset
+            ? `⚠️ ${req.user.name || 'Waiter'} ne ready/delivered order update ki — dobara check karein!`
+            : `📝 ${req.user.name || 'Waiter'} ne order #${order.orderNumber} update kiya`,
         });
+
+        console.log(`[WaiterUpdate] ✅ Socket emitted → branch-${branchIdStr} | order: ${order.orderNumber}`);
       }
-    } catch (e) {
-      console.warn('[updateOrder] Socket emit error (non-fatal):', e.message);
+    } catch (socketErr) {
+      console.warn('[WaiterUpdate] Socket emit failed (non-fatal):', socketErr.message);
     }
 
     res.json({
       success: true,
-      order:   populated,
+      order: populatedOrder,
       statusReset,
       message: statusReset
-        ? 'Order update ho gayi aur chef ko dobara bhej di gayi!'
-        : 'Order update ho gayi. Chef ko notify kar diya gaya.',
+        ? '✅ Order update ho gayi aur chef ko dobara bhej di gayi!'
+        : '✅ Changes save ho gaye. Chef ko notify kar diya gaya.',
     });
+
   } catch (error) {
-    console.error('updateOrder error:', error);
+    console.error('[updateOrder] ERROR:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -448,7 +487,7 @@ exports.markDelivered = async (req, res) => {
     if (order.status !== 'ready')
       return res.status(400).json({ success: false, message: 'Sirf ready orders deliver ki ja sakti hain' });
 
-    order.status      = 'delivered';
+    order.status = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
@@ -549,46 +588,46 @@ exports.requestPrint = async (req, res) => {
     const { orderId } = req.params;
 
     const order = await Order.findById(orderId)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .lean();
 
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
     const slipData = {
-      orderNumber:     order.orderNumber,
-      orderType:       order.orderType,
-      tableNumber:     order.tableNumber     || null,
-      floor:           order.floor           || null,
-      customerName:    order.customerName    || null,
-      customerPhone:   order.customerPhone   || null,
+      orderNumber: order.orderNumber,
+      orderType: order.orderType,
+      tableNumber: order.tableNumber || null,
+      floor: order.floor || null,
+      customerName: order.customerName || null,
+      customerPhone: order.customerPhone || null,
       deliveryAddress: order.deliveryAddress || null,
-      deliveryBoy:     order.deliveryBoyId?.name || null,
-      waiter:          order.waiterId?.name      || null,
-      cashierNote:     order.cashierNote         || null,
+      deliveryBoy: order.deliveryBoyId?.name || null,
+      waiter: order.waiterId?.name || null,
+      cashierNote: order.cashierNote || null,
       items: (order.items || []).map(item => ({
-        name:     item.name || 'Item',
-        size:     item.size || null,
+        name: item.name || 'Item',
+        size: item.size || null,
         quantity: item.quantity,
-        price:    item.price,
+        price: item.price,
         subtotal: item.subtotal ?? item.price * item.quantity,
       })),
-      subtotal:       order.subtotal || order.total,
-      discount:       order.discount || 0,
-      tax:            order.tax      || 0,
-      total:          order.total,
-      paymentMethod:  order.paymentMethod  || null,
+      subtotal: order.subtotal || order.total,
+      discount: order.discount || 0,
+      tax: order.tax || 0,
+      total: order.total,
+      paymentMethod: order.paymentMethod || null,
       receivedAmount: order.receivedAmount || 0,
-      changeAmount:   order.changeAmount   || 0,
-      createdAt:      order.createdAt,
-      paidAt:         order.paidAt || null,
+      changeAmount: order.changeAmount || 0,
+      createdAt: order.createdAt,
+      paidAt: order.paidAt || null,
     };
 
     try {
       const io = req.app.get('io');
       if (io)
         io.to(`branch-${String(order.branchId)}`).emit('print-order', {
-          orderId:     String(order._id),
+          orderId: String(order._id),
           orderNumber: order.orderNumber,
           slipData,
         });
