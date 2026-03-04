@@ -357,4 +357,22 @@ exports.updateOrder = async (req, res) => {
   }
 };
 
+exports.getDeliveryHistory = async (req, res) => {
+  try {
+    const orders = await Order.find({
+      deliveryBoyId: req.user._id,
+      status: { $in: ['completed', 'returned', 'delivered', 'cancelled'] },
+    })
+      .populate('items.itemId', 'name')
+      .sort({ createdAt: -1 })
+      .limit(100)   // last 100 deliveries
+      .lean();
+
+    res.json({ success: true, orders, count: orders.length });
+  } catch (error) {
+    console.error('Get delivery history error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;

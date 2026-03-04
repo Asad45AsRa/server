@@ -12,7 +12,8 @@ const {
   claimOrder,            // ✅ ADD
   updateOrderStatus,
   completeDelivery,
-  updateOrder
+  updateOrder,
+  getDeliveryHistory
 } = require('../controllers/deliveryController');
 
 router.use(protect);
@@ -25,6 +26,7 @@ router.get('/orders/unassigned', getUnassignedOrders);   // ✅ ADD — specific
 router.put('/orders/claim', claimOrder);                  // ✅ ADD
 router.put('/orders/status', updateOrderStatus);
 router.put('/orders/complete', completeDelivery);
+router.get('/orders/history', getDeliveryHistory);
 router.put('/orders/:id', updateOrder);   // /:id HAMESHA LAST
 
 module.exports = router;
