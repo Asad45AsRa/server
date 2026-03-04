@@ -1,8 +1,9 @@
+// routes/cashier.js
 const express = require('express');
-const router = express.Router();
-const { protect } = require('../middlewares/auth');
+const router  = express.Router();
+const { protect }   = require('../middlewares/auth');
 const { checkRole } = require('../middlewares/roleCheck');
-const { UserRole } = require('../config/constants');
+const { UserRole }  = require('../config/constants');
 
 const {
   getPendingOrders,
@@ -23,8 +24,9 @@ const {
   updateTable,
   deleteTable,
   seedTables,
-  receiveAdvancePayment,       // ✅ NEW
-  completeAdvancePaidOrder,    // ✅ NEW
+  receiveAdvancePayment,
+  completeAdvancePaidOrder,
+  getOrderById,               // ✅ NEW — now properly exported from controller
 } = require('../controllers/cashierController');
 
 const {
@@ -44,62 +46,55 @@ const coldDrinkCtrl = require('../controllers/Colddrinkcontroller');
 router.use(protect);
 router.use(checkRole(UserRole.CASHIER));
 
-// ===== ORDERS =====
-router.get('/orders/pending',    getPendingOrders);
-router.get('/orders/completed',  getCompletedOrders);
-router.put('/orders/:id/status', updateOrderStatus);
+// ===== ORDERS — SPECIFIC ROUTES FIRST (before /:id) =====
+router.get('/orders/pending',   getPendingOrders);
+router.get('/orders/completed', getCompletedOrders);
 
-// ===== ✅ NEW: ADVANCE PAYMENT ROUTES =====
-// NOTE: These specific routes MUST be before /orders/:id to avoid conflict
+// ✅ FIX: Advance payment routes BEFORE /:id to avoid conflict
 router.post('/orders/:id/advance-payment',  receiveAdvancePayment);
 router.post('/orders/:id/complete-advance', completeAdvancePaidOrder);
+router.put('/orders/:id/status',            updateOrderStatus);
+
+// ✅ NEW: Single order fetch (used by socket fallback + reprint)
+router.get('/orders/:id', getOrderById);
 
 // ===== PAYMENTS =====
-router.post('/payment',          receivePayment);
-router.get('/payments',          getPaymentHistory);
-router.get('/payment-slip/:id',  getPaymentSlip);
+router.post('/payment',         receivePayment);
+router.get('/payments',         getPaymentHistory);
+router.get('/payment-slip/:id', getPaymentSlip);
 
 // ===== REPORTS =====
 router.get('/reports/hourly-income', getHourlyIncomeReport);
 
 // ===== PRODUCTS =====
-router.post('/products',      createProduct);
-router.put('/products/:id',   updateProduct);
-router.get('/products',       getProducts);
+router.post('/products',    createProduct);
+router.put('/products/:id', updateProduct);
+router.get('/products',     getProducts);
 
 // ===== DEALS =====
-router.post('/deals',         createDeal);
-router.put('/deals/:id',      updateDeal);
-router.get('/deals',          getDeals);
+router.post('/deals',    createDeal);
+router.put('/deals/:id', updateDeal);
+router.get('/deals',     getDeals);
 
-// ===== TABLES =====
-// ✅ /tables/seed MUST be before /:id to avoid conflict
-router.post('/tables/seed',   seedTables);
-router.get('/tables',         getTables);
-router.post('/tables',        createTable);
-router.put('/tables/:id',     updateTable);
-router.delete('/tables/:id',  deleteTable);
+// ===== TABLES — /tables/seed MUST be before /:id =====
+router.post('/tables/seed',  seedTables);
+router.get('/tables',        getTables);
+router.post('/tables',       createTable);
+router.put('/tables/:id',    updateTable);
+router.delete('/tables/:id', deleteTable);
 
-// ===== COLD DRINKS (Read-Only for cashier) =====
+// ===== COLD DRINKS =====
 router.get('/cold-drinks', coldDrinkCtrl.getAllColdDrinks);
 
-// ===== CUSTOMER WALLET =====
-// NOTE: /wallet/summary MUST be before /:id
-router.get('/wallet/summary',          getWalletSummary);
-router.get('/wallet',                  getAllCustomers);
-router.get('/wallet/:id',              getCustomer);
-router.post('/wallet',                 createCustomer);
-router.put('/wallet/:id',              updateCustomer);
-
-// Wallet Transactions
-router.post('/wallet/:id/advance',     addAdvancePayment);
-router.post('/wallet/:id/credit',      creditPurchase);
-router.post('/wallet/:id/use-balance', useBalance);
-router.post('/wallet/:id/clear-debt',  clearDebt);
-
-// ===== SINGLE ORDER FETCH (keep at bottom to avoid conflicts) =====
-const { getOrderByIdAPI: getOrderById } = require('../controllers/cashierController');
-// Only add this route if getOrderById is exported from controller
-// router.get('/orders/:id', getOrderById);
+// ===== CUSTOMER WALLET — /wallet/summary MUST be before /:id =====
+router.get('/wallet/summary',           getWalletSummary);
+router.get('/wallet',                   getAllCustomers);
+router.get('/wallet/:id',               getCustomer);
+router.post('/wallet',                  createCustomer);
+router.put('/wallet/:id',               updateCustomer);
+router.post('/wallet/:id/advance',      addAdvancePayment);
+router.post('/wallet/:id/credit',       creditPurchase);
+router.post('/wallet/:id/use-balance',  useBalance);
+router.post('/wallet/:id/clear-debt',   clearDebt);
 
 module.exports = router;

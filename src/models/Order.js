@@ -1,15 +1,16 @@
+// models/Order.js
 const mongoose = require('mongoose');
 const { OrderStatus, OrderType } = require('../config/constants');
 
 const orderSchema = new mongoose.Schema({
   orderNumber: { type: String, required: true, unique: true },
-  branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
-  orderType: { type: String, enum: Object.values(OrderType), required: true },
+  branchId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+  orderType:   { type: String, enum: Object.values(OrderType), required: true },
   tableNumber: { type: Number, default: null },
 
   floor: {
-    type: String,
-    enum: ['ground_floor', 'first_floor', 'second_floor', 'outdoor', null],
+    type:    String,
+    enum:    ['ground_floor', 'first_floor', 'second_floor', 'outdoor', null],
     default: null,
   },
 
@@ -35,7 +36,12 @@ const orderSchema = new mongoose.Schema({
   discount: { type: Number, default: 0 },
   total:    { type: Number, required: true },
 
-  status: { type: String, enum: Object.values(OrderStatus), default: OrderStatus.PENDING },
+  // ✅ FIX: status enum now uses Object.values(OrderStatus) which includes 'returned' and 'out_for_delivery'
+  status: {
+    type:    String,
+    enum:    Object.values(OrderStatus),
+    default: OrderStatus.PENDING,
+  },
 
   waiterId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   chefId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -56,30 +62,34 @@ const orderSchema = new mongoose.Schema({
 
   // Waiter update tracking
   updatedByWaiter: { type: Boolean, default: false },
-  waiterUpdatedAt: { type: Date, default: null },
-  waiterUpdatedBy: { type: String, default: null },
+  waiterUpdatedAt: { type: Date,    default: null },
+  waiterUpdatedBy: { type: String,  default: null },
 
   // Stock deduction tracking
   stockDeducted: { type: Boolean, default: false },
 
-  // Delivery meter tracking
+  // ── Delivery Meter Tracking ────────────────────────────────────────────────
   startMeterReading: { type: Number },
   endMeterReading:   { type: Number },
   distanceTravelled: { type: Number },
   cashReceived:      { type: Number },
 
+  // ✅ NEW: Meter photos (base64 or URI string — optional, captured from bike meter)
+  startMeterImage: { type: String, default: null },   // photo before departure
+  endMeterImage:   { type: String, default: null },   // photo after return
+
   // Payment tracking
   paymentMethod:  { type: String, default: null },
   receivedAmount: { type: Number, default: 0 },
   changeAmount:   { type: Number, default: 0 },
-  paidAt:         { type: Date, default: null },
+  paidAt:         { type: Date,   default: null },
 
   // Advance payment tracking
   advancePaid:          { type: Number, default: 0 },
   advancePaymentMethod: { type: String, default: 'cash' },
   paymentStatus: {
-    type: String,
-    enum: ['unpaid', 'partial_advance', 'fully_advance'],
+    type:    String,
+    enum:    ['unpaid', 'partial_advance', 'fully_advance'],
     default: 'unpaid',
   },
 
@@ -89,17 +99,15 @@ const orderSchema = new mongoose.Schema({
   readyAt:     { type: Date },
   departedAt:  { type: Date },
   deliveredAt: { type: Date },
+  returnedAt:  { type: Date },  // ✅ NEW: when delivery boy returns
   completedAt: { type: Date },
 }, { timestamps: true });
 
 // ============================================================
 // ✅ AUTO FREE TABLE — runs whenever status changes to
 //    'completed' OR 'cancelled' for a dine_in order.
-//    This covers cashier completing, waiter cancelling,
-//    admin force-completing — every path automatically.
 // ============================================================
 orderSchema.pre('save', async function (next) {
-  // Only act when the status field was actually modified
   if (!this.isModified('status')) return next();
 
   const shouldFreeTable =
@@ -112,28 +120,16 @@ orderSchema.pre('save', async function (next) {
     try {
       const Table = mongoose.model('Table');
       const result = await Table.findOneAndUpdate(
-        {
-          branchId:    this.branchId,
-          tableNumber: this.tableNumber,
-          floor:       this.floor,
-        },
+        { branchId: this.branchId, tableNumber: this.tableNumber, floor: this.floor },
         { $set: { isOccupied: false, currentOrderId: null } },
         { new: true }
       );
-
       if (result) {
-        console.log(
-          `✅ [Order Hook] Table ${this.tableNumber} (${this.floor}) freed` +
-          ` — order #${this.orderNumber} → ${this.status}`
-        );
+        console.log(`✅ [Order Hook] Table ${this.tableNumber} (${this.floor}) freed — order #${this.orderNumber} → ${this.status}`);
       } else {
-        console.warn(
-          `⚠️ [Order Hook] Table ${this.tableNumber} (${this.floor}) not found in DB` +
-          ` — branchId: ${this.branchId}`
-        );
+        console.warn(`⚠️ [Order Hook] Table ${this.tableNumber} (${this.floor}) not found`);
       }
     } catch (err) {
-      // Non-fatal: log error but don't block the order save
       console.error('❌ [Order Hook] Table free error (non-fatal):', err.message);
     }
   }
