@@ -84,9 +84,6 @@ exports.getDeliveryBoys = async (req, res) => {
 };
 
 // ========== INITIALIZE TABLES ==========
-// POST /waiter/tables/initialize
-// Ek baar chalao — 4 floors × 30 tables = 120 tables create hongi
-// Agar already exist karti hain to skip ho jaati hain (upsert)
 
 exports.initializeTables = async (req, res) => {
   try {
@@ -126,14 +123,11 @@ exports.initializeTables = async (req, res) => {
 };
 
 // ========== RESET TABLE OCCUPANCY ==========
-// POST /waiter/tables/reset
-// Sari tables free kar do (purani orders clear), new shift ke liye
 
 exports.resetTableOccupancy = async (req, res) => {
   try {
     const branchId = req.user.branchId;
 
-    // Sab occupied tables free karo
     const result = await Table.updateMany(
       { branchId, isOccupied: true },
       { $set: { isOccupied: false, currentOrderId: null } }
@@ -169,7 +163,6 @@ exports.getTables = async (req, res) => {
       .sort({ floor: 1, tableNumber: 1 })
       .lean();
 
-    // Group by floor
     const groupedTables = {
       ground_floor:  [],
       first_floor:   [],
@@ -209,7 +202,6 @@ exports.createOrder = async (req, res) => {
       return { ...item, itemType: item.itemType || itemType };
     });
 
-    // Dine-in: table + floor required
     if (orderType === 'dine_in') {
       if (!tableNumber || !floor) {
         return res.status(400).json({
@@ -217,14 +209,12 @@ exports.createOrder = async (req, res) => {
           message: 'Table number aur floor zaroori hai dine-in orders ke liye',
         });
       }
-      // Validate floor value
       if (!FLOORS.includes(floor)) {
         return res.status(400).json({
           success: false,
           message: `Invalid floor: ${floor}. Valid: ${FLOORS.join(', ')}`,
         });
       }
-      // Validate table number range
       if (tableNumber < 1 || tableNumber > TABLES_PER_FLOOR) {
         return res.status(400).json({
           success: false,
@@ -233,7 +223,6 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    // Delivery: name + phone + address required
     if (orderType === 'delivery') {
       if (!customerName || !customerPhone) {
         return res.status(400).json({
@@ -249,7 +238,6 @@ exports.createOrder = async (req, res) => {
       }
     }
 
-    // Cold drink stock check
     for (const item of processedItems) {
       if (item.type === 'cold_drink') {
         const coldDrink = await ColdDrink.findOne({ 'sizes._id': item.itemId });
@@ -268,7 +256,6 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
-    // Auto-generate cashierNote if not provided
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
@@ -294,6 +281,7 @@ exports.createOrder = async (req, res) => {
       cashierNote: finalCashierNote,
       status: 'pending',
       updatedByWaiter: false,
+      stockDeducted: false,
     };
 
     if (orderType === 'dine_in') {
@@ -313,9 +301,7 @@ exports.createOrder = async (req, res) => {
 
     const order = await Order.create(orderData);
 
-    // Handle dine-in table occupation
     if (orderType === 'dine_in') {
-      // Find table by branchId + tableNumber + floor (unique combination)
       let table = await Table.findOne({
         branchId: req.user.branchId,
         tableNumber,
@@ -323,7 +309,6 @@ exports.createOrder = async (req, res) => {
       });
 
       if (!table) {
-        // Auto-create if doesn't exist (shouldn't happen after init, but safety net)
         table = await Table.create({
           tableNumber,
           capacity: TABLE_CAPACITY,
@@ -342,7 +327,7 @@ exports.createOrder = async (req, res) => {
         });
       }
 
-      table.isOccupied    = true;
+      table.isOccupied     = true;
       table.currentOrderId = order._id;
       await table.save();
     }
@@ -413,7 +398,7 @@ exports.getMyOrders = async (req, res) => {
 
 exports.updateOrder = async (req, res) => {
   try {
-    const orderId = req.params.id;
+    const orderId = req.params.id; // ✅ FIXED: was req.params.orderId
     const { items, notes, cashierNote } = req.body;
 
     if (!orderId) {
@@ -449,16 +434,16 @@ exports.updateOrder = async (req, res) => {
         else itemType = 'Product';
       }
       return {
-        itemId:         String(item.itemId?._id || item.itemId || ''),
-        name:           item.name || 'Item',
-        size:           item.size || null,
-        quantity:       Number(item.quantity) || 1,
-        price:          Number(item.price) || 0,
-        subtotal:       (Number(item.price) || 0) * (Number(item.quantity) || 1),
-        type:           item.type || 'product',
+        itemId:          String(item.itemId?._id || item.itemId || ''),
+        name:            item.name || 'Item',
+        size:            item.size || null,
+        quantity:        Number(item.quantity) || 1,
+        price:           Number(item.price) || 0,
+        subtotal:        (Number(item.price) || 0) * (Number(item.quantity) || 1),
+        type:            item.type || 'product',
         itemType,
-        isColdDrink:    item.isColdDrink || false,
-        coldDrinkId:    item.coldDrinkId || null,
+        isColdDrink:     item.isColdDrink || false,
+        coldDrinkId:     item.coldDrinkId || null,
         coldDrinkSizeId: item.coldDrinkSizeId || null,
       };
     });
@@ -474,15 +459,15 @@ exports.updateOrder = async (req, res) => {
     if (notes       !== undefined) order.notes       = notes;
     if (cashierNote !== undefined) order.cashierNote = cashierNote;
 
-    order.updatedByWaiter  = true;
-    order.waiterUpdatedAt  = new Date();
-    order.waiterUpdatedBy  = req.user.name || 'Waiter';
+    order.updatedByWaiter = true;
+    order.waiterUpdatedAt = new Date();
+    order.waiterUpdatedBy = req.user.name || 'Waiter';
 
     const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
     let statusReset = false;
 
     if (wasReadyOrDelivered) {
-      order.status       = 'preparing';
+      order.status        = 'preparing';
       order.stockDeducted = false;
       statusReset = true;
     }
@@ -499,17 +484,17 @@ exports.updateOrder = async (req, res) => {
       const io = req.app.get('io');
       if (io) {
         io.to(`branch-${String(order.branchId)}`).emit('order-updated-by-waiter', {
-          orderId:          String(order._id),
-          orderNumber:      order.orderNumber,
-          orderType:        order.orderType,
-          tableNumber:      order.tableNumber || null,
-          floor:            order.floor || null,
-          status:           order.status,
+          orderId:         String(order._id),
+          orderNumber:     order.orderNumber,
+          orderType:       order.orderType,
+          tableNumber:     order.tableNumber || null,
+          floor:           order.floor || null,
+          status:          order.status,
           statusReset,
-          waiterName:       req.user.name || 'Waiter',
-          waiterUpdatedAt:  order.waiterUpdatedAt,
-          total:            order.total,
-          itemCount:        order.items.length,
+          waiterName:      req.user.name || 'Waiter',
+          waiterUpdatedAt: order.waiterUpdatedAt,
+          total:           order.total,
+          itemCount:       order.items.length,
           items: (populatedOrder.items || []).map(i => ({
             name:     i.itemId?.name || i.name || 'Item',
             size:     i.size || null,
@@ -561,7 +546,7 @@ exports.acknowledgeOrderUpdate = async (req, res) => {
 
 exports.markDelivered = async (req, res) => {
   try {
-    const { orderId } = req.params;
+    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
@@ -644,7 +629,7 @@ exports.getOrderSlip = async (req, res) => {
 
 exports.deleteOrder = async (req, res) => {
   try {
-    const { orderId } = req.params;
+    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
@@ -658,7 +643,6 @@ exports.deleteOrder = async (req, res) => {
     order.status = 'cancelled';
     await order.save();
 
-    // Table free karo
     if (order.orderType === 'dine_in' && order.tableNumber && order.floor) {
       await Table.findOneAndUpdate(
         { branchId: order.branchId, tableNumber: order.tableNumber, floor: order.floor },
@@ -677,7 +661,7 @@ exports.deleteOrder = async (req, res) => {
 
 exports.requestPrint = async (req, res) => {
   try {
-    const { orderId } = req.params;
+    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
 
     const order = await Order.findById(orderId)
       .populate('waiterId', 'name')
@@ -704,15 +688,15 @@ exports.requestPrint = async (req, res) => {
         price:    item.price,
         subtotal: item.subtotal ?? item.price * item.quantity,
       })),
-      subtotal:        order.subtotal || order.total,
-      discount:        order.discount || 0,
-      tax:             order.tax || 0,
-      total:           order.total,
-      paymentMethod:   order.paymentMethod || null,
-      receivedAmount:  order.receivedAmount || 0,
-      changeAmount:    order.changeAmount || 0,
-      createdAt:       order.createdAt,
-      paidAt:          order.paidAt || null,
+      subtotal:       order.subtotal || order.total,
+      discount:       order.discount || 0,
+      tax:            order.tax || 0,
+      total:          order.total,
+      paymentMethod:  order.paymentMethod || null,
+      receivedAmount: order.receivedAmount || 0,
+      changeAmount:   order.changeAmount || 0,
+      createdAt:      order.createdAt,
+      paidAt:         order.paidAt || null,
     };
 
     try {
