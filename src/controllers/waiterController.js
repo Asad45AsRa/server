@@ -398,7 +398,7 @@ exports.getMyOrders = async (req, res) => {
 
 exports.updateOrder = async (req, res) => {
   try {
-    const orderId = req.params.id; // ✅ FIXED: was req.params.orderId
+    const orderId = req.params.id;
     const { items, notes, cashierNote } = req.body;
 
     if (!orderId) {
@@ -546,7 +546,7 @@ exports.acknowledgeOrderUpdate = async (req, res) => {
 
 exports.markDelivered = async (req, res) => {
   try {
-    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
+    const orderId = req.params.id;
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
@@ -625,11 +625,11 @@ exports.getOrderSlip = async (req, res) => {
   }
 };
 
-// ========== DELETE ORDER ==========
+// ========== DELETE ORDER (Cancel) ==========
 
 exports.deleteOrder = async (req, res) => {
   try {
-    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
+    const orderId = req.params.id;
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
@@ -640,15 +640,10 @@ exports.deleteOrder = async (req, res) => {
     if (order.status !== 'pending')
       return res.status(400).json({ success: false, message: 'Sirf pending orders cancel ho sakti hain' });
 
+    // ✅ Setting status to 'cancelled' triggers the Order pre('save') hook
+    // which automatically frees the table — no need for manual table update here.
     order.status = 'cancelled';
     await order.save();
-
-    if (order.orderType === 'dine_in' && order.tableNumber && order.floor) {
-      await Table.findOneAndUpdate(
-        { branchId: order.branchId, tableNumber: order.tableNumber, floor: order.floor },
-        { $set: { isOccupied: false, currentOrderId: null } }
-      );
-    }
 
     res.json({ success: true, message: 'Order cancel ho gayi' });
   } catch (error) {
@@ -661,7 +656,7 @@ exports.deleteOrder = async (req, res) => {
 
 exports.requestPrint = async (req, res) => {
   try {
-    const orderId = req.params.id; // ✅ FIXED: was const { orderId } = req.params
+    const orderId = req.params.id;
 
     const order = await Order.findById(orderId)
       .populate('waiterId', 'name')

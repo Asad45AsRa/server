@@ -54,12 +54,12 @@ const orderSchema = new mongoose.Schema({
 
   notes: { type: String },
 
-  // ✅ Waiter update tracking
+  // Waiter update tracking
   updatedByWaiter: { type: Boolean, default: false },
   waiterUpdatedAt: { type: Date, default: null },
   waiterUpdatedBy: { type: String, default: null },
 
-  // ✅ Stock deduction tracking
+  // Stock deduction tracking
   stockDeducted: { type: Boolean, default: false },
 
   // Delivery meter tracking
@@ -91,5 +91,54 @@ const orderSchema = new mongoose.Schema({
   deliveredAt: { type: Date },
   completedAt: { type: Date },
 }, { timestamps: true });
+
+// ============================================================
+// ✅ AUTO FREE TABLE — runs whenever status changes to
+//    'completed' OR 'cancelled' for a dine_in order.
+//    This covers cashier completing, waiter cancelling,
+//    admin force-completing — every path automatically.
+// ============================================================
+orderSchema.pre('save', async function (next) {
+  // Only act when the status field was actually modified
+  if (!this.isModified('status')) return next();
+
+  const shouldFreeTable =
+    (this.status === 'completed' || this.status === 'cancelled') &&
+    this.orderType === 'dine_in' &&
+    this.tableNumber != null &&
+    this.floor != null;
+
+  if (shouldFreeTable) {
+    try {
+      const Table = mongoose.model('Table');
+      const result = await Table.findOneAndUpdate(
+        {
+          branchId:    this.branchId,
+          tableNumber: this.tableNumber,
+          floor:       this.floor,
+        },
+        { $set: { isOccupied: false, currentOrderId: null } },
+        { new: true }
+      );
+
+      if (result) {
+        console.log(
+          `✅ [Order Hook] Table ${this.tableNumber} (${this.floor}) freed` +
+          ` — order #${this.orderNumber} → ${this.status}`
+        );
+      } else {
+        console.warn(
+          `⚠️ [Order Hook] Table ${this.tableNumber} (${this.floor}) not found in DB` +
+          ` — branchId: ${this.branchId}`
+        );
+      }
+    } catch (err) {
+      // Non-fatal: log error but don't block the order save
+      console.error('❌ [Order Hook] Table free error (non-fatal):', err.message);
+    }
+  }
+
+  next();
+});
 
 module.exports = mongoose.model('Order', orderSchema);
