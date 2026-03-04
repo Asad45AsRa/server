@@ -9,6 +9,10 @@ const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
 
+const FLOORS = ['ground_floor', 'first_floor', 'second_floor', 'outdoor'];
+const TABLES_PER_FLOOR = 30;
+const TABLE_CAPACITY   = 4;
+
 // ========== MENU ==========
 
 exports.getMenu = async (req, res) => {
@@ -79,6 +83,73 @@ exports.getDeliveryBoys = async (req, res) => {
   }
 };
 
+// ========== INITIALIZE TABLES ==========
+// POST /waiter/tables/initialize
+// Ek baar chalao — 4 floors × 30 tables = 120 tables create hongi
+// Agar already exist karti hain to skip ho jaati hain (upsert)
+
+exports.initializeTables = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    let created = 0;
+    let skipped = 0;
+
+    for (const floor of FLOORS) {
+      for (let tableNumber = 1; tableNumber <= TABLES_PER_FLOOR; tableNumber++) {
+        const existing = await Table.findOne({ branchId, tableNumber, floor });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+        await Table.create({
+          tableNumber,
+          capacity: TABLE_CAPACITY,
+          floor,
+          branchId,
+          isOccupied: false,
+          isActive: true,
+        });
+        created++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Tables initialized. Created: ${created}, Already existed: ${skipped}`,
+      created,
+      skipped,
+    });
+  } catch (error) {
+    console.error('initializeTables error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== RESET TABLE OCCUPANCY ==========
+// POST /waiter/tables/reset
+// Sari tables free kar do (purani orders clear), new shift ke liye
+
+exports.resetTableOccupancy = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+
+    // Sab occupied tables free karo
+    const result = await Table.updateMany(
+      { branchId, isOccupied: true },
+      { $set: { isOccupied: false, currentOrderId: null } }
+    );
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} tables reset successfully`,
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error('resetTableOccupancy error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // ========== TABLES ==========
 
 exports.getTables = async (req, res) => {
@@ -92,17 +163,18 @@ exports.getTables = async (req, res) => {
     const tables = await Table.find(query)
       .populate({
         path: 'currentOrderId',
-        select: 'orderNumber total status items createdAt',
+        select: 'orderNumber total status items createdAt orderType',
         populate: { path: 'waiterId', select: 'name' }
       })
       .sort({ floor: 1, tableNumber: 1 })
       .lean();
 
+    // Group by floor
     const groupedTables = {
-      ground_floor: [],
-      first_floor: [],
-      second_floor: [],
-      outdoor: []
+      ground_floor:  [],
+      first_floor:   [],
+      second_floor:  [],
+      outdoor:       [],
     };
 
     tables.forEach(table => {
@@ -137,32 +209,47 @@ exports.createOrder = async (req, res) => {
       return { ...item, itemType: item.itemType || itemType };
     });
 
-    // ✅ Dine-in: table + floor required
-    if (orderType === 'dine_in' && (!tableNumber || !floor)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Table number and floor are required for dine-in orders',
-      });
+    // Dine-in: table + floor required
+    if (orderType === 'dine_in') {
+      if (!tableNumber || !floor) {
+        return res.status(400).json({
+          success: false,
+          message: 'Table number aur floor zaroori hai dine-in orders ke liye',
+        });
+      }
+      // Validate floor value
+      if (!FLOORS.includes(floor)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid floor: ${floor}. Valid: ${FLOORS.join(', ')}`,
+        });
+      }
+      // Validate table number range
+      if (tableNumber < 1 || tableNumber > TABLES_PER_FLOOR) {
+        return res.status(400).json({
+          success: false,
+          message: `Table number 1-${TABLES_PER_FLOOR} ke beech hona chahiye`,
+        });
+      }
     }
 
-    // ✅ Delivery: name + phone + address — sab required
+    // Delivery: name + phone + address required
     if (orderType === 'delivery') {
       if (!customerName || !customerPhone) {
         return res.status(400).json({
           success: false,
-          message: 'Customer name and phone are required for delivery orders',
+          message: 'Customer name aur phone zaroori hai delivery orders ke liye',
         });
       }
       if (!deliveryAddress) {
         return res.status(400).json({
           success: false,
-          message: 'Delivery address is required for delivery orders',
+          message: 'Delivery address zaroori hai',
         });
       }
     }
 
-    // ✅ Takeaway: name + phone optional — koi validation nahi
-
+    // Cold drink stock check
     for (const item of processedItems) {
       if (item.type === 'cold_drink') {
         const coldDrink = await ColdDrink.findOne({ 'sizes._id': item.itemId });
@@ -181,13 +268,14 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
-    // ✅ cashierNote auto-generate — optional fields gracefully handle karo
+    // Auto-generate cashierNote if not provided
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
-        finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${(floor || '').replace(/_/g, ' ')})`;
+        const floorLabel = (floor || '').replace(/_/g, ' ');
+        finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${floorLabel})`;
       } else if (orderType === 'takeaway') {
-        const nameStr = customerName ? customerName : 'Walk-in';
+        const nameStr  = customerName  ? customerName  : 'Walk-in';
         const phoneStr = customerPhone ? ' | ' + customerPhone : '';
         finalCashierNote = `🥡 Takeaway — ${nameStr}${phoneStr}`;
       } else if (orderType === 'delivery') {
@@ -213,7 +301,6 @@ exports.createOrder = async (req, res) => {
       orderData.floor = floor;
     }
 
-    // ✅ Takeaway/Delivery: sirf tab add karo jab value ho
     if (orderType === 'takeaway' || orderType === 'delivery') {
       if (customerName)  orderData.customerName  = customerName;
       if (customerPhone) orderData.customerPhone = customerPhone;
@@ -226,14 +313,24 @@ exports.createOrder = async (req, res) => {
 
     const order = await Order.create(orderData);
 
+    // Handle dine-in table occupation
     if (orderType === 'dine_in') {
-      let table = await Table.findOne({ branchId: req.user.branchId, tableNumber, floor });
+      // Find table by branchId + tableNumber + floor (unique combination)
+      let table = await Table.findOne({
+        branchId: req.user.branchId,
+        tableNumber,
+        floor,
+      });
 
       if (!table) {
+        // Auto-create if doesn't exist (shouldn't happen after init, but safety net)
         table = await Table.create({
-          tableNumber, capacity: 4, floor,
+          tableNumber,
+          capacity: TABLE_CAPACITY,
+          floor,
           branchId: req.user.branchId,
-          isActive: true, isOccupied: false,
+          isActive: true,
+          isOccupied: false,
         });
       }
 
@@ -241,11 +338,11 @@ exports.createOrder = async (req, res) => {
         await Order.findByIdAndDelete(order._id);
         return res.status(400).json({
           success: false,
-          message: `Table ${tableNumber} is already occupied`,
+          message: `Table ${tableNumber} (${floor.replace(/_/g, ' ')}) already occupied hai`,
         });
       }
 
-      table.isOccupied = true;
+      table.isOccupied    = true;
       table.currentOrderId = order._id;
       await table.save();
     }
@@ -259,15 +356,14 @@ exports.createOrder = async (req, res) => {
       const io = req.app.get('io');
       if (io) {
         io.to(`branch-${req.user.branchId}`).emit('delivery-assigned', {
-          orderId: String(populatedOrder._id),
-          orderNumber: populatedOrder.orderNumber,
+          orderId:      String(populatedOrder._id),
+          orderNumber:  populatedOrder.orderNumber,
           customerName,
           deliveryAddress,
           total,
           deliveryBoyId: String(deliveryBoyId),
-          assignedBy: req.user.name || 'Waiter',
+          assignedBy:   req.user.name || 'Waiter',
         });
-        console.log(`[Waiter] Delivery order ${populatedOrder.orderNumber} assigned to boy ${deliveryBoyId}`);
       }
     }
 
@@ -275,8 +371,8 @@ exports.createOrder = async (req, res) => {
       success: true,
       order: populatedOrder,
       message: orderType === 'delivery' && !deliveryBoyId
-        ? 'Order created. Jab chef ready karega tab delivery boys ko notify kiya jayega.'
-        : 'Order created successfully',
+        ? 'Order create ho gayi. Chef ready karega tab delivery boy ko notify kiya jayega.'
+        : 'Order successfully create ho gayi',
     });
   } catch (error) {
     console.error('Create order error:', error);
@@ -314,11 +410,6 @@ exports.getMyOrders = async (req, res) => {
 };
 
 // ========== UPDATE ORDER ==========
-// ✅ KEY CHANGES:
-//   1. 'ready' status orders bhi edit ho sakti hain — status 'preparing' pe reset hogi
-//   2. updatedByWaiter = true  +  waiterUpdatedAt = now  set hota hai
-//   3. Socket.IO se chef ko real-time event 'order-updated-by-waiter' emit hoti hai
-//   4. Response mein statusReset: true aata hai jab ready → preparing
 
 exports.updateOrder = async (req, res) => {
   try {
@@ -334,22 +425,18 @@ exports.updateOrder = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order nahi mili' });
     }
 
-    // ✅ Sirf apni order edit kar sakta hai waiter
     if (order.waiterId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Ye aapki order nahi' });
     }
 
-    // ✅ Flow: pending → preparing → ready → delivered → completed
-    // completed aur cancelled pe lock — baaki sab editable
     const EDITABLE_STATUSES = ['pending', 'preparing', 'ready', 'delivered'];
     if (!EDITABLE_STATUSES.includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: `${order.status} order edit nahi ho sakti — slip print ho chuki hai`,
+        message: `${order.status} order edit nahi ho sakti`,
       });
     }
 
-    // Items update
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Kam se kam ek item zaroori hai' });
     }
@@ -362,45 +449,42 @@ exports.updateOrder = async (req, res) => {
         else itemType = 'Product';
       }
       return {
-        itemId: String(item.itemId?._id || item.itemId || ''),
-        name: item.name || 'Item',
-        size: item.size || null,
-        quantity: Number(item.quantity) || 1,
-        price: Number(item.price) || 0,
-        subtotal: (Number(item.price) || 0) * (Number(item.quantity) || 1),
-        type: item.type || 'product',
+        itemId:         String(item.itemId?._id || item.itemId || ''),
+        name:           item.name || 'Item',
+        size:           item.size || null,
+        quantity:       Number(item.quantity) || 1,
+        price:          Number(item.price) || 0,
+        subtotal:       (Number(item.price) || 0) * (Number(item.quantity) || 1),
+        type:           item.type || 'product',
         itemType,
-        isColdDrink: item.isColdDrink || false,
-        coldDrinkId: item.coldDrinkId || null,
+        isColdDrink:    item.isColdDrink || false,
+        coldDrinkId:    item.coldDrinkId || null,
         coldDrinkSizeId: item.coldDrinkSizeId || null,
       };
     });
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount || 0, 0);
 
-    order.items = processedItems;
-    order.subtotal = subtotal;
-    order.tax = tax;
-    order.total = total;
+    order.items         = processedItems;
+    order.subtotal      = subtotal;
+    order.tax           = tax;
+    order.total         = total;
     order.estimatedTime = calculateTotalTime(processedItems);
 
-    if (notes !== undefined) order.notes = notes;
+    if (notes       !== undefined) order.notes       = notes;
     if (cashierNote !== undefined) order.cashierNote = cashierNote;
 
-    // ✅ Waiter update flags — chef ko pata chale
-    order.updatedByWaiter = true;
-    order.waiterUpdatedAt = new Date();
-    order.waiterUpdatedBy = req.user.name || 'Waiter';
+    order.updatedByWaiter  = true;
+    order.waiterUpdatedAt  = new Date();
+    order.waiterUpdatedBy  = req.user.name || 'Waiter';
 
-    // ✅ ready ya delivered thi — chef ko wapas bhejo preparing pe
     const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
     let statusReset = false;
 
     if (wasReadyOrDelivered) {
-      order.status = 'preparing';
-      order.stockDeducted = false; // stock dobara deduct hogi jab chef ready kare
+      order.status       = 'preparing';
+      order.stockDeducted = false;
       statusReset = true;
-      console.log(`[WaiterUpdate] Order ${order.orderNumber}: ${order.status} → preparing`);
     }
 
     await order.save();
@@ -411,34 +495,30 @@ exports.updateOrder = async (req, res) => {
       .populate('chefId', 'name')
       .populate('items.itemId', 'name');
 
-    // ✅ Chef ko real-time notify karo via Socket.IO
     try {
       const io = req.app.get('io');
       if (io) {
-        const branchIdStr = String(order.branchId);
-
-        io.to(`branch-${branchIdStr}`).emit('order-updated-by-waiter', {
-          orderId: String(order._id),
-          orderNumber: order.orderNumber,
-          orderType: order.orderType,
-          tableNumber: order.tableNumber || null,
-          status: order.status,
+        io.to(`branch-${String(order.branchId)}`).emit('order-updated-by-waiter', {
+          orderId:          String(order._id),
+          orderNumber:      order.orderNumber,
+          orderType:        order.orderType,
+          tableNumber:      order.tableNumber || null,
+          floor:            order.floor || null,
+          status:           order.status,
           statusReset,
-          waiterName: req.user.name || 'Waiter',
-          waiterUpdatedAt: order.waiterUpdatedAt,
-          total: order.total,
-          itemCount: order.items.length,
+          waiterName:       req.user.name || 'Waiter',
+          waiterUpdatedAt:  order.waiterUpdatedAt,
+          total:            order.total,
+          itemCount:        order.items.length,
           items: (populatedOrder.items || []).map(i => ({
-            name: i.itemId?.name || i.name || 'Item',
-            size: i.size || null,
+            name:     i.itemId?.name || i.name || 'Item',
+            size:     i.size || null,
             quantity: i.quantity,
           })),
           message: statusReset
             ? `⚠️ ${req.user.name || 'Waiter'} ne ready/delivered order update ki — dobara check karein!`
             : `📝 ${req.user.name || 'Waiter'} ne order #${order.orderNumber} update kiya`,
         });
-
-        console.log(`[WaiterUpdate] ✅ Socket emitted → branch-${branchIdStr} | order: ${order.orderNumber}`);
       }
     } catch (socketErr) {
       console.warn('[WaiterUpdate] Socket emit failed (non-fatal):', socketErr.message);
@@ -452,16 +532,13 @@ exports.updateOrder = async (req, res) => {
         ? '✅ Order update ho gayi aur chef ko dobara bhej di gayi!'
         : '✅ Changes save ho gaye. Chef ko notify kar diya gaya.',
     });
-
   } catch (error) {
     console.error('[updateOrder] ERROR:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-
 // ========== ACKNOWLEDGE ORDER UPDATE ==========
-// Chef ne order dekh li → updatedByWaiter flag clear karo
 
 exports.acknowledgeOrderUpdate = async (req, res) => {
   try {
@@ -471,7 +548,6 @@ exports.acknowledgeOrderUpdate = async (req, res) => {
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
     order.updatedByWaiter = false;
-    // waiterUpdatedAt/By history ke liye preserve
     await order.save();
 
     res.json({ success: true, message: 'Acknowledged' });
@@ -496,7 +572,7 @@ exports.markDelivered = async (req, res) => {
     if (order.status !== 'ready')
       return res.status(400).json({ success: false, message: 'Sirf ready orders deliver ki ja sakti hain' });
 
-    order.status = 'delivered';
+    order.status      = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
@@ -534,27 +610,27 @@ exports.getOrderSlip = async (req, res) => {
     }
 
     const slipData = {
-      orderNumber: order.orderNumber,
-      orderType: order.orderType,
-      tableNumber: order.tableNumber,
-      floor: order.floor?.replace(/_/g, ' '),
-      cashierNote: order.cashierNote,
+      orderNumber:  order.orderNumber,
+      orderType:    order.orderType,
+      tableNumber:  order.tableNumber,
+      floor:        order.floor?.replace(/_/g, ' '),
+      cashierNote:  order.cashierNote,
       items: order.items.map(item => ({
-        name: item.itemId?.name || item.name || 'Item',
-        size: item.size,
+        name:     item.itemId?.name || item.name || 'Item',
+        size:     item.size,
         quantity: item.quantity,
-        price: item.price,
+        price:    item.price,
         subtotal: item.price * item.quantity,
       })),
-      subtotal: order.subtotal || order.total,
-      discount: order.discount || 0,
-      tax: order.tax || 0,
-      total: order.total,
-      waiter: order.waiterId?.name || null,
+      subtotal:    order.subtotal || order.total,
+      discount:    order.discount || 0,
+      tax:         order.tax || 0,
+      total:       order.total,
+      waiter:      order.waiterId?.name || null,
       deliveryBoy: order.deliveryBoyId?.name || null,
-      branchName: BRANCH_NAME,
-      createdAt: order.createdAt,
-      status: order.status,
+      branchName:  BRANCH_NAME,
+      createdAt:   order.createdAt,
+      status:      order.status,
     };
 
     res.json({ success: true, slipData });
@@ -582,6 +658,14 @@ exports.deleteOrder = async (req, res) => {
     order.status = 'cancelled';
     await order.save();
 
+    // Table free karo
+    if (order.orderType === 'dine_in' && order.tableNumber && order.floor) {
+      await Table.findOneAndUpdate(
+        { branchId: order.branchId, tableNumber: order.tableNumber, floor: order.floor },
+        { $set: { isOccupied: false, currentOrderId: null } }
+      );
+    }
+
     res.json({ success: true, message: 'Order cancel ho gayi' });
   } catch (error) {
     console.error('deleteOrder error:', error);
@@ -603,39 +687,39 @@ exports.requestPrint = async (req, res) => {
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
     const slipData = {
-      orderNumber: order.orderNumber,
-      orderType: order.orderType,
-      tableNumber: order.tableNumber || null,
-      floor: order.floor || null,
-      customerName: order.customerName || null,
-      customerPhone: order.customerPhone || null,
+      orderNumber:     order.orderNumber,
+      orderType:       order.orderType,
+      tableNumber:     order.tableNumber || null,
+      floor:           order.floor || null,
+      customerName:    order.customerName || null,
+      customerPhone:   order.customerPhone || null,
       deliveryAddress: order.deliveryAddress || null,
-      deliveryBoy: order.deliveryBoyId?.name || null,
-      waiter: order.waiterId?.name || null,
-      cashierNote: order.cashierNote || null,
+      deliveryBoy:     order.deliveryBoyId?.name || null,
+      waiter:          order.waiterId?.name || null,
+      cashierNote:     order.cashierNote || null,
       items: (order.items || []).map(item => ({
-        name: item.name || 'Item',
-        size: item.size || null,
+        name:     item.name || 'Item',
+        size:     item.size || null,
         quantity: item.quantity,
-        price: item.price,
+        price:    item.price,
         subtotal: item.subtotal ?? item.price * item.quantity,
       })),
-      subtotal: order.subtotal || order.total,
-      discount: order.discount || 0,
-      tax: order.tax || 0,
-      total: order.total,
-      paymentMethod: order.paymentMethod || null,
-      receivedAmount: order.receivedAmount || 0,
-      changeAmount: order.changeAmount || 0,
-      createdAt: order.createdAt,
-      paidAt: order.paidAt || null,
+      subtotal:        order.subtotal || order.total,
+      discount:        order.discount || 0,
+      tax:             order.tax || 0,
+      total:           order.total,
+      paymentMethod:   order.paymentMethod || null,
+      receivedAmount:  order.receivedAmount || 0,
+      changeAmount:    order.changeAmount || 0,
+      createdAt:       order.createdAt,
+      paidAt:          order.paidAt || null,
     };
 
     try {
       const io = req.app.get('io');
       if (io)
         io.to(`branch-${String(order.branchId)}`).emit('print-order', {
-          orderId: String(order._id),
+          orderId:     String(order._id),
           orderNumber: order.orderNumber,
           slipData,
         });
@@ -649,6 +733,5 @@ exports.requestPrint = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 module.exports = exports;
