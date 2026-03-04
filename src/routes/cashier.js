@@ -22,7 +22,9 @@ const {
   createTable,
   updateTable,
   deleteTable,
-  seedTables,       // ✅ NEW: seed 30 tables per floor
+  seedTables,
+  receiveAdvancePayment,       // ✅ NEW
+  completeAdvancePaidOrder,    // ✅ NEW
 } = require('../controllers/cashierController');
 
 const {
@@ -46,6 +48,11 @@ router.use(checkRole(UserRole.CASHIER));
 router.get('/orders/pending',    getPendingOrders);
 router.get('/orders/completed',  getCompletedOrders);
 router.put('/orders/:id/status', updateOrderStatus);
+
+// ===== ✅ NEW: ADVANCE PAYMENT ROUTES =====
+// NOTE: These specific routes MUST be before /orders/:id to avoid conflict
+router.post('/orders/:id/advance-payment',  receiveAdvancePayment);
+router.post('/orders/:id/complete-advance', completeAdvancePaidOrder);
 
 // ===== PAYMENTS =====
 router.post('/payment',          receivePayment);
@@ -89,5 +96,10 @@ router.post('/wallet/:id/advance',     addAdvancePayment);
 router.post('/wallet/:id/credit',      creditPurchase);
 router.post('/wallet/:id/use-balance', useBalance);
 router.post('/wallet/:id/clear-debt',  clearDebt);
+
+// ===== SINGLE ORDER FETCH (keep at bottom to avoid conflicts) =====
+const { getOrderByIdAPI: getOrderById } = require('../controllers/cashierController');
+// Only add this route if getOrderById is exported from controller
+// router.get('/orders/:id', getOrderById);
 
 module.exports = router;

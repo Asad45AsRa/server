@@ -68,7 +68,6 @@ exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
 
-    // ✅ 'returned' add kiya — delivery boy wapas aaya, cashier payment verify karega
     const orders = await Order.find({
       branchId,
       status: { $in: ['pending', 'accepted', 'preparing', 'ready', 'delivered', 'returned'] }
@@ -116,6 +115,148 @@ exports.getCompletedOrders = async (req, res) => {
   }
 };
 
+// ========== ✅ NEW: ADVANCE PAYMENT ==========
+/**
+ * Customer order karte waqt advance payment deta hai.
+ * Order ka status change NAHI hota — woh normal flow mein chalta rahega.
+ * Order mein advancePaid field update hoti hai.
+ */
+exports.receiveAdvancePayment = async (req, res) => {
+  try {
+    const { orderId, amount, method = 'cash', transactionId, notes } = req.body;
+
+    if (!orderId || !amount || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'orderId aur valid amount required hai' });
+    }
+
+    const order = await Order.findById(orderId)
+      .populate('waiterId', 'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId');
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (order.status === 'completed') {
+      return res.status(400).json({ success: false, message: 'Order already completed hai' });
+    }
+
+    const prevAdvance   = Number(order.advancePaid || 0);
+    const newAdvance    = prevAdvance + Number(amount);
+    const orderTotal    = Number(order.total || 0);
+
+    // Cap at order total (over-payment not allowed)
+    const cappedAdvance = Math.min(newAdvance, orderTotal);
+
+    order.advancePaid    = cappedAdvance;
+    order.paymentStatus  = cappedAdvance >= orderTotal ? 'fully_advance' : 'partial_advance';
+    await order.save();
+
+    // Create a payment record for advance
+    await Payment.create({
+      orderId:       order._id,
+      branchId:      req.user.branchId,
+      amount:        Number(amount),
+      method,
+      status:        'advance',
+      cashierId:     req.user._id,
+      waiterId:      order.waiterId,
+      deliveryBoyId: order.deliveryBoyId,
+      receivedAmount: Number(amount),
+      changeAmount:  0,
+      transactionId: transactionId || '',
+      notes:         notes || 'Advance payment',
+      paidAt:        new Date(),
+    });
+
+    res.json({
+      success: true,
+      order,
+      message: `✅ Advance Rs.${Number(amount).toLocaleString()} record ho gaya. ${cappedAdvance >= orderTotal ? 'Order fully pre-paid!' : `Remaining: Rs.${(orderTotal - cappedAdvance).toLocaleString()}`}`,
+    });
+  } catch (error) {
+    console.error('Receive advance payment error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== ✅ NEW: COMPLETE ADVANCE-PAID ORDER ==========
+/**
+ * Jab order fully advance-paid ho aur ready/delivered stage pe aa jaye,
+ * cashier sirf "Complete & Print" karega — koi extra payment nahi leni.
+ */
+exports.completeAdvancePaidOrder = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    const order = await Order.findById(orderId)
+      .populate('waiterId', 'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId');
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const advance = Number(order.advancePaid || 0);
+    const total   = Number(order.total || 0);
+
+    if (advance < total) {
+      return res.status(400).json({
+        success: false,
+        message: `Order fully paid nahi hai. Remaining: Rs.${(total - advance).toLocaleString()}`,
+      });
+    }
+
+    // Create final payment record (marks advance as final)
+    const payment = await Payment.create({
+      orderId:        order._id,
+      branchId:       req.user.branchId,
+      amount:         total,
+      method:         order.advancePaymentMethod || 'cash',
+      status:         PaymentStatus.PAID,
+      cashierId:      req.user._id,
+      waiterId:       order.waiterId,
+      deliveryBoyId:  order.deliveryBoyId,
+      receivedAmount: advance,
+      changeAmount:   Math.max(0, advance - total),
+      notes:          'Advance paid — order completed',
+      paidAt:         new Date(),
+    });
+
+    // Complete the order
+    order.status      = 'completed';
+    order.completedAt = new Date();
+    order.cashierId   = req.user._id;
+    await order.save();
+
+    // Free the table if dine-in
+    if (order.tableNumber) {
+      await Table.findOneAndUpdate(
+        { branchId: req.user.branchId, tableNumber: order.tableNumber },
+        { isOccupied: false, currentOrderId: null }
+      );
+    }
+
+    const populatedPayment = await Payment.findById(payment._id)
+      .populate('cashierId', 'name')
+      .populate('waiterId', 'name')
+      .populate('orderId');
+
+    res.json({
+      success:  true,
+      payment:  populatedPayment,
+      order,
+      slipData: buildSlipData(order, populatedPayment),
+      message:  'Order completed successfully',
+    });
+  } catch (error) {
+    console.error('Complete advance paid order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // ========== PAYMENT ==========
 
 exports.receivePayment = async (req, res) => {
@@ -131,29 +272,33 @@ exports.receivePayment = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // ✅ FIX: delivery 'returned' orders ke liye cashReceived use karo agar receivedAmount nahi
-    const finalReceivedAmount = receivedAmount || order.cashReceived || amount;
-    const changeAmount = finalReceivedAmount ? finalReceivedAmount - amount : 0;
+    // ✅ UPDATED: Account for any advance already paid
+    const advance           = Number(order.advancePaid || 0);
+    const orderTotal        = Number(order.total || 0);
+    const remainingAmount   = Math.max(0, orderTotal - advance);
+    const finalAmount       = amount !== undefined ? Number(amount) : remainingAmount;
+    const finalReceived     = receivedAmount || order.cashReceived || finalAmount;
+    const changeAmount      = Math.max(0, Number(finalReceived) - remainingAmount);
 
     const payment = await Payment.create({
       orderId,
-      branchId: req.user.branchId,
-      amount,
+      branchId:      req.user.branchId,
+      amount:        finalAmount,
       method,
-      status: PaymentStatus.PAID,
-      cashierId: req.user._id,
-      waiterId: order.waiterId,
+      status:        PaymentStatus.PAID,
+      cashierId:     req.user._id,
+      waiterId:      order.waiterId,
       deliveryBoyId: order.deliveryBoyId,
-      receivedAmount: finalReceivedAmount,
+      receivedAmount: finalReceived,
       changeAmount,
       transactionId,
       notes,
       paidAt: new Date()
     });
 
-    order.status = 'completed';
+    order.status      = 'completed';
     order.completedAt = new Date();
-    order.cashierId = req.user._id;
+    order.cashierId   = req.user._id;
     await order.save();
 
     if (order.tableNumber) {
@@ -185,31 +330,32 @@ exports.receivePayment = async (req, res) => {
 
 const buildSlipData = (order, payment) => {
   return {
-    orderNumber: order.orderNumber,
-    orderType: order.orderType,
-    tableNumber: order.tableNumber,
-    // ✅ Delivery info slip mein bhi show hoga
-    customerName: order.customerName || null,
+    orderNumber:     order.orderNumber,
+    orderType:       order.orderType,
+    tableNumber:     order.tableNumber,
+    customerName:    order.customerName    || null,
+    customerPhone:   order.customerPhone   || null,
     deliveryAddress: order.deliveryAddress || null,
-    deliveryBoy: payment.deliveryBoyId?.name || null,
+    deliveryBoy:     payment.deliveryBoyId?.name || null,
     distanceTravelled: order.distanceTravelled || null,
     items: order.items.map(item => ({
-      name: item.itemId?.name || item.name || 'Item',
-      size: item.size,
+      name:     item.itemId?.name || item.name || 'Item',
+      size:     item.size,
       quantity: item.quantity,
-      price: item.price,
+      price:    item.price,
       subtotal: item.price * item.quantity
     })),
-    subtotal: order.subtotal || order.total,
-    discount: order.discount || 0,
-    total: order.total,
-    paymentMethod: payment.method,
+    subtotal:       order.subtotal      || order.total,
+    discount:       order.discount      || 0,
+    total:          order.total,
+    advancePaid:    order.advancePaid   || 0, // ✅ NEW: include advance on slip
+    paymentMethod:  payment.method,
     receivedAmount: payment.receivedAmount,
-    changeAmount: payment.changeAmount,
-    cashier: payment.cashierId?.name || 'Cashier',
-    waiter: payment.waiterId?.name || null,
-    paidAt: payment.paidAt,
-    branchName: BRANCH_NAME,
+    changeAmount:   payment.changeAmount,
+    cashier:        payment.cashierId?.name || 'Cashier',
+    waiter:         payment.waiterId?.name  || null,
+    paidAt:         payment.paidAt,
+    branchName:     BRANCH_NAME,
   };
 };
 
@@ -288,9 +434,11 @@ exports.getHourlyIncomeReport = async (req, res) => {
     const endOfDay = new Date(reportDate);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // ✅ Exclude 'advance' status payments from revenue (only count final payments)
     const payments = await Payment.find({
       branchId,
-      paidAt: { $gte: startOfDay, $lte: endOfDay }
+      paidAt: { $gte: startOfDay, $lte: endOfDay },
+      status: { $ne: 'advance' }, // advance payments alag track honge
     }).populate('orderId', 'orderType orderNumber');
 
     const hourlyData = {};
@@ -299,19 +447,19 @@ exports.getHourlyIncomeReport = async (req, res) => {
         hour: h,
         label: `${h.toString().padStart(2, '0')}:00 - ${(h + 1).toString().padStart(2, '0')}:00`,
         totalAmount: 0,
-        orderCount: 0,
-        cash: 0,
-        card: 0,
-        online: 0
+        orderCount:  0,
+        cash:        0,
+        card:        0,
+        online:      0
       };
     }
 
     payments.forEach(payment => {
       const hour = new Date(payment.paidAt).getHours();
       hourlyData[hour].totalAmount += payment.amount;
-      hourlyData[hour].orderCount += 1;
-      if (payment.method === 'cash') hourlyData[hour].cash += payment.amount;
-      else if (payment.method === 'card') hourlyData[hour].card += payment.amount;
+      hourlyData[hour].orderCount  += 1;
+      if (payment.method === 'cash')        hourlyData[hour].cash   += payment.amount;
+      else if (payment.method === 'card')   hourlyData[hour].card   += payment.amount;
       else if (payment.method === 'online') hourlyData[hour].online += payment.amount;
     });
 
@@ -319,10 +467,10 @@ exports.getHourlyIncomeReport = async (req, res) => {
 
     const summary = {
       totalRevenue: payments.reduce((s, p) => s + p.amount, 0),
-      totalOrders: payments.length,
-      cashTotal: payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0),
-      cardTotal: payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0),
-      onlineTotal: payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0),
+      totalOrders:  payments.length,
+      cashTotal:    payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0),
+      cardTotal:    payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0),
+      onlineTotal:  payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0),
       peakHour: hourlyArray.length > 0
         ? hourlyArray.reduce((max, h) => h.totalAmount > max.totalAmount ? h : max, hourlyArray[0])
         : null
@@ -421,7 +569,7 @@ exports.createDeal = async (req, res) => {
     const cleanedProducts = (products || []).map(item => {
       const cleaned = {
         itemType: item.itemType || 'product',
-        size: item.size,
+        size:     item.size,
         quantity: parseInt(item.quantity) || 1,
       };
       if (item.itemType === 'cold_drink') {
@@ -435,7 +583,7 @@ exports.createDeal = async (req, res) => {
     const dealData = {
       ...rest,
       products: cleanedProducts,
-      branchId: req.user.branchId,
+      branchId:  req.user.branchId,
       createdBy: req.user._id,
     };
 
@@ -459,7 +607,7 @@ exports.updateDeal = async (req, res) => {
     const cleanedProducts = (products || []).map(item => {
       const cleaned = {
         itemType: item.itemType || 'product',
-        size: item.size,
+        size:     item.size,
         quantity: parseInt(item.quantity) || 1,
       };
       if (item.itemType === 'cold_drink') {
@@ -558,8 +706,6 @@ exports.deleteTable = async (req, res) => {
   }
 };
 
-// ========== SEED TABLES (30 per floor) ==========
-
 exports.seedTables = async (req, res) => {
   try {
     const branchId = req.user.branchId;
@@ -575,11 +721,11 @@ exports.seedTables = async (req, res) => {
         if (!existing) {
           await Table.create({
             tableNumber: tableNum,
-            capacity: 4,
+            capacity:    4,
             floor,
             branchId,
-            isActive: true,
-            isOccupied: false,
+            isActive:    true,
+            isOccupied:  false,
           });
           created++;
         } else {
@@ -591,7 +737,7 @@ exports.seedTables = async (req, res) => {
     res.json({
       success: true,
       message: `Tables seeded! Created: ${created}, Already existed: ${skipped}`,
-      total: floors.length * TABLES_PER_FLOOR,
+      total:   floors.length * TABLES_PER_FLOOR,
       created,
       skipped,
     });
@@ -600,8 +746,6 @@ exports.seedTables = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
-// ========== COLD DRINKS (legacy - cashier view) ==========
 
 exports.getColdDrinks = async (req, res) => {
   try {
