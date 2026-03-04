@@ -7,7 +7,6 @@ const orderSchema = new mongoose.Schema({
   orderType: { type: String, enum: Object.values(OrderType), required: true },
   tableNumber: { type: Number, default: null },
 
-  // ✅ FIX: floor enum removed so null is allowed for takeaway/delivery orders
   floor: {
     type: String,
     enum: ['ground_floor', 'first_floor', 'second_floor', 'outdoor', null],
@@ -41,7 +40,6 @@ const orderSchema = new mongoose.Schema({
   customerPhone:   { type: String, default: null },
   deliveryAddress: { type: String, default: null },
 
-  // ✅ NEW: Note from waiter for cashier (shows on cashier screen & slip)
   cashierNote: { type: String, default: '' },
 
   estimatedTime:   { type: Number },
@@ -55,6 +53,15 @@ const orderSchema = new mongoose.Schema({
   endMeterReading:   { type: Number },
   distanceTravelled: { type: Number },
   cashReceived:      { type: Number },
+
+  // ✅ NEW: Advance payment tracking
+  advancePaid:          { type: Number, default: 0 },
+  advancePaymentMethod: { type: String, default: 'cash' },
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'partial_advance', 'fully_advance'],
+    default: 'unpaid',
+  },
 
   // Timestamps
   acceptedAt:  { type: Date },
