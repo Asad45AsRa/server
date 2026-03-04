@@ -30,6 +30,15 @@ const convertToInventoryUnit = (ingredientQty, ingredientUnit, inventoryUnit) =>
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  HELPER: aaj ki active inventory check
+// ══════════════════════════════════════════════════════════════════════════════
+const getTodayRange = () => {
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+  return { today, tomorrow };
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  ORDER MANAGEMENT
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -53,14 +62,13 @@ exports.getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({
       chefId: req.user._id,
-      status: { $in: ['preparing', 'ready'] },   // ✅ 'accepted' removed
+      status: { $in: ['preparing', 'ready'] },
     })
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .sort({ acceptedAt: 1 })
       .lean();
 
-    // ✅ updatedByWaiter flag ensure karo — falsy default
     const ordersWithFlag = orders.map(o => ({
       ...o,
       updatedByWaiter:  o.updatedByWaiter  || false,
@@ -74,21 +82,43 @@ exports.getMyOrders = async (req, res) => {
   }
 };
 
-// ✅ UPDATED: Accept karte hi status 'preparing' ho jata hai — 'accepted' step khatam
+// ══════════════════════════════════════════════════════════════════════════════
+//  ✅ UPDATED: acceptOrder — pehle inventory check, phir accepting
+// ══════════════════════════════════════════════════════════════════════════════
 exports.acceptOrder = async (req, res) => {
   try {
     const { orderId } = req.body;
-    const order = await Order.findById(orderId);
 
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    // ── ✅ INVENTORY CHECK: aaj ki active inventory zaroori hai ──────────────
+    const { today, tomorrow } = getTodayRange();
+    const activeInventory = await ChefInventory.findOne({
+      chefId: req.user._id,
+      status: 'active',
+      date: { $gte: today, $lt: tomorrow },
+    });
+
+    if (!activeInventory) {
+      return res.status(400).json({
+        success: false,
+        noInventory: true,   // ✅ frontend is flag se special message dikhayega
+        message:
+          'Aapke paas aaj ki inventory issue nahi hui hai. ' +
+          'Pehle inventory officer se inventory lein, phir order accept karein.',
+      });
+    }
+
+    // ── Order fetch & validate ───────────────────────────────────────────────
+    const order = await Order.findById(orderId);
+    if (!order)
+      return res.status(404).json({ success: false, message: 'Order not found' });
     if (order.status !== 'pending')
       return res.status(400).json({ success: false, message: 'Order is not pending' });
 
-    // ✅ Seedha 'preparing' — 'accepted' bypass ho gaya
+    // ── Seedha 'preparing' ───────────────────────────────────────────────────
     order.status      = 'preparing';
     order.chefId      = req.user._id;
-    order.acceptedAt  = new Date();   // timestamp rakh lo reference ke liye
-    order.preparingAt = new Date();   // ✅ preparing timestamp bhi set
+    order.acceptedAt  = new Date();
+    order.preparingAt = new Date();
     await order.save();
 
     const notifyId = order.waiterId || order.deliveryBoyId;
@@ -125,18 +155,15 @@ exports.updateOrderStatus = async (req, res) => {
     if (additionalDelay && parseInt(additionalDelay) > 0)
       order.additionalDelay = (order.additionalDelay || 0) + parseInt(additionalDelay);
 
-    // 'preparing' timestamp — agar kabhi directly set ho
     if (status === 'preparing') order.preparingAt = new Date();
 
     // ════════════════════════════════════════════════════════
-    //  READY → DEDUCT STOCK + BROADCAST (if unassigned delivery)
+    //  READY → DEDUCT STOCK + BROADCAST
     // ════════════════════════════════════════════════════════
     if (status === 'ready' && !order.stockDeducted) {
       order.readyAt = new Date();
 
-      const today    = new Date(); today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
-
+      const { today, tomorrow } = getTodayRange();
       const chefRecord = await ChefInventory.findOne({
         chefId: req.user._id,
         status: 'active',
@@ -249,9 +276,7 @@ exports.updateOrderStatus = async (req, res) => {
 
       order.stockDeducted = true;
 
-      // ════════════════════════════════════════════════════════════════════════
-      //  ✅ BROADCAST: Delivery order ready + koi delivery boy assign nahi
-      // ════════════════════════════════════════════════════════════════════════
+      // ── BROADCAST: Delivery order ready + no delivery boy ────────────────
       if (order.orderType === 'delivery' && !order.deliveryBoyId) {
         try {
           const io = req.app.get('io');
@@ -308,13 +333,64 @@ exports.updateOrderStatus = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  ✅ NEW: COMPLETED ORDERS HISTORY (chef ke ready/delivered orders)
+// ══════════════════════════════════════════════════════════════════════════════
+exports.getCompletedOrders = async (req, res) => {
+  try {
+    const page  = parseInt(req.query.page)  || 1;
+    const limit = parseInt(req.query.limit) || 30;
+    const skip  = (page - 1) * limit;
+
+    const orders = await Order.find({
+      chefId: req.user._id,
+      status: { $in: ['ready', 'delivered', 'completed'] },
+    })
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name')
+      .sort({ readyAt: -1, updatedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Order.countDocuments({
+      chefId: req.user._id,
+      status: { $in: ['ready', 'delivered', 'completed'] },
+    });
+
+    res.json({
+      success: true,
+      orders,
+      count:   orders.length,
+      total,
+      page,
+      pages:   Math.ceil(total / limit),
+    });
+  } catch (error) {
+    console.error('getCompletedOrders error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ── Acknowledge waiter update ────────────────────────────────────────────────
+exports.acknowledgeOrderUpdate = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    await Order.findByIdAndUpdate(orderId, {
+      $set: { updatedByWaiter: false },
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  CHEF'S OWN INVENTORY
 // ══════════════════════════════════════════════════════════════════════════════
 
 exports.getMyInventory = async (req, res) => {
   try {
-    const today    = new Date(); today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+    const { today, tomorrow } = getTodayRange();
 
     const chefInventory = await ChefInventory.findOne({
       chefId: req.user._id,

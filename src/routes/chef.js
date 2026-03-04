@@ -9,6 +9,8 @@ const {
   getMyOrders,
   acceptOrder,
   updateOrderStatus,
+  acknowledgeOrderUpdate,   // ✅ NEW
+  getCompletedOrders,       // ✅ NEW
   getInventory,
   requestInventory,
   getMyRequests,
@@ -23,19 +25,21 @@ const {
 router.use(protect);
 router.use(checkRole(UserRole.CHEF));
 
-// Orders
-router.get('/orders/pending',    getPendingOrders);
-router.get('/orders/my-orders',  getMyOrders);
-router.post('/orders/accept',    acceptOrder);
-router.put('/orders/status',     updateOrderStatus);
+// ── Orders ───────────────────────────────────────────────────────────────────
+router.get('/orders/pending',             getPendingOrders);
+router.get('/orders/my-orders',           getMyOrders);
+router.get('/orders/completed',           getCompletedOrders);      // ✅ NEW — history
+router.post('/orders/accept',             acceptOrder);
+router.put('/orders/status',              updateOrderStatus);
+router.post('/orders/acknowledge-update', acknowledgeOrderUpdate);  // ✅ NEW
 
-// Chef's own issued inventory
+// ── Chef's own issued inventory ──────────────────────────────────────────────
 router.get('/my-inventory',              getMyInventory);
 router.put('/my-inventory/use',          updateItemUsage);
 router.post('/my-inventory/return',      returnInventory);
 router.get('/my-inventory/history',      getMyReturnHistory);
 
-// General inventory (view + request)
+// ── General inventory (view + request) ──────────────────────────────────────
 router.get('/inventory',                 getInventory);
 router.post('/inventory/request',        requestInventory);
 router.get('/inventory/my-requests',     getMyRequests);
