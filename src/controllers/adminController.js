@@ -9,6 +9,7 @@ const Product = require('../models/Product');
 const Deal = require('../models/Deal');
 const bcrypt = require('bcryptjs');
 const { getMonthDateRange } = require('../utils/dateHelpers');
+const Table   = require('../models/Table');
 
 // ========== DASHBOARD ==========
 exports.getDashboard = async (req, res) => {
@@ -432,12 +433,43 @@ exports.getAllOrders = async (req, res) => {
 };
 exports.deleteOrder = async (req, res) => {
   try {
-    const order = await Order.findByIdAndUpdate(req.params.id, { status: 'cancelled' }, { new: true });
-    res.json({ success: true, order });
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // ✅ 1. Table free karo — sirf dine_in orders ke liye
+    if (order.orderType === 'dine_in' && order.tableNumber && order.branchId) {
+      await Table.findOneAndUpdate(
+        {
+          branchId:    order.branchId,
+          tableNumber: order.tableNumber,
+          ...(order.floor ? { floor: order.floor } : {}),
+        },
+        {
+          isOccupied:     false,
+          currentOrderId: null,
+        }
+      );
+    }
+
+    // ✅ 2. Payment records delete karo
+    await Payment.deleteMany({ orderId: order._id });
+
+    // ✅ 3. Order permanently delete karo
+    await Order.findByIdAndDelete(req.params.id);
+
+    res.json({
+      success: true,
+      message: 'Order permanently deleted, table freed, payment records removed',
+    });
   } catch (error) {
+    console.error('deleteOrder Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
