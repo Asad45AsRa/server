@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const dealSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: { type: String },
+
   products: [{
     // Product item (optional - only for product type)
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
@@ -23,5 +24,6 @@ const dealSchema = new mongoose.Schema({
   branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
+//comments
 
 module.exports = mongoose.model('Deal', dealSchema);
