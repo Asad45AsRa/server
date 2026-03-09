@@ -1,33 +1,34 @@
-// routes/deliver.js
 const express = require('express');
-const router = express.Router();
-const { protect } = require('../middlewares/auth');
-const { checkRole } = require('../middlewares/roleCheck');
-const { UserRole } = require('../config/constants');
+const router  = express.Router();
+const { protect }    = require('../middlewares/auth');
+const { checkRole }  = require('../middlewares/roleCheck');
+const { UserRole }   = require('../config/constants');
 const {
   getMenu,
   createDeliveryOrder,
   getMyOrders,
-  getUnassignedOrders,   // ✅ ADD
-  claimOrder,            // ✅ ADD
+  getUnassignedOrders,
+  claimOrder,
   updateOrderStatus,
   completeDelivery,
+  requestPrint,        // ✅ NEW
   updateOrder,
-  getDeliveryHistory
+  getDeliveryHistory,
 } = require('../controllers/deliveryController');
 
 router.use(protect);
 router.use(checkRole(UserRole.DELIVERY));
 
-router.get('/menu', getMenu);
-router.post('/orders', createDeliveryOrder);
-router.get('/orders/my-orders', getMyOrders);
-router.get('/orders/unassigned', getUnassignedOrders);   // ✅ ADD — specific pehle
-router.put('/orders/claim', claimOrder);                  // ✅ ADD
-router.put('/orders/status', updateOrderStatus);
-router.put('/orders/complete', completeDelivery);
-router.get('/orders/history', getDeliveryHistory);
-router.put('/orders/:id', updateOrder);   // /:id HAMESHA LAST
+router.get('/menu',                          getMenu);
+router.post('/orders',                       createDeliveryOrder);
+router.get('/orders/my-orders',              getMyOrders);
+router.get('/orders/unassigned',             getUnassignedOrders);   // specific before /:id
+router.get('/orders/history',                getDeliveryHistory);    // specific before /:id
+router.put('/orders/claim',                  claimOrder);
+router.put('/orders/status',                 updateOrderStatus);
+router.put('/orders/complete',               completeDelivery);
+router.post('/orders/:id/print-request',     requestPrint);          // ✅ NEW — same as waiter
+router.put('/orders/:id',                    updateOrder);            // /:id ALWAYS LAST
 
 module.exports = router;
 

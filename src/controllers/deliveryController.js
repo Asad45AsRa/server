@@ -1,7 +1,7 @@
 // controllers/deliveryController.js
-const Order   = require('../models/Order');
-const Product = require('../models/Product');
-const Deal    = require('../models/Deal');
+const Order     = require('../models/Order');
+const Product   = require('../models/Product');
+const Deal      = require('../models/Deal');
 const Inventory = require('../models/Inventory');
 const ColdDrink = require('../models/Colddrink');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
@@ -15,6 +15,7 @@ const resolveItemType = (item) => {
 };
 
 // ========== MENU ==========
+// ✅ FIX: Returns ALL products and ALL active deals so delivery screen shows them
 
 exports.getMenu = async (req, res) => {
   try {
@@ -26,12 +27,17 @@ exports.getMenu = async (req, res) => {
 
     const rawDeals = await Deal.find({
       branchId,
-      isActive:  true,
-      validFrom: { $lte: new Date() },
-      validUntil:{ $gte: new Date() },
+      isActive:   true,
+      validFrom:  { $lte: new Date() },
+      validUntil: { $gte: new Date() },
     }).populate('products.productId', 'name image').lean();
 
-    const deals = rawDeals.map(d => ({ ...d, price: d.discountedPrice }));
+    // ✅ Keep discountedPrice visible for frontend
+    const deals = rawDeals.map(d => ({
+      ...d,
+      price:          d.discountedPrice || d.price,
+      discountedPrice: d.discountedPrice,
+    }));
 
     const now = new Date();
     let coldDrinks = [];
@@ -39,24 +45,29 @@ exports.getMenu = async (req, res) => {
       const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
       coldDrinks = rawColdDrinks
         .map(d => ({
-          _id:     d._id,
-          name:    d.name,
-          company: d.company,
-          category:'cold_drinks',
-          sizes:   d.sizes
+          _id:      d._id,
+          name:     d.name,
+          company:  d.company,
+          category: 'cold_drinks',
+          sizes:    d.sizes
             .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
             .map(s => ({ _id: s._id, size: s.size, price: s.salePrice, currentStock: s.currentStock })),
         }))
         .filter(d => d.sizes.length > 0);
     } catch (e) {
-      const invDrinks = await Inventory.find({ branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 } }).lean();
+      const invDrinks = await Inventory.find({
+        branchId,
+        category:     'cold_drinks',
+        isActive:     true,
+        currentStock: { $gt: 0 },
+      }).lean();
       coldDrinks = invDrinks;
     }
 
     res.json({
       success: true,
-      menu: { products, deals, coldDrinks },
-      counts: { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length },
+      menu:    { products, deals, coldDrinks },
+      counts:  { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length },
     });
   } catch (error) {
     console.error('Get menu error:', error);
@@ -86,7 +97,10 @@ exports.createDeliveryOrder = async (req, res) => {
           if (coldDrink) {
             const sizeVariant = coldDrink.sizes.id(item.itemId);
             if (sizeVariant && sizeVariant.currentStock < item.quantity) {
-              return res.status(400).json({ success: false, message: `Insufficient stock for ${coldDrink.name} (${sizeVariant.size})` });
+              return res.status(400).json({
+                success: false,
+                message: `Insufficient stock for ${coldDrink.name} (${sizeVariant.size})`,
+              });
             }
           }
         } catch (e) {
@@ -102,10 +116,10 @@ exports.createDeliveryOrder = async (req, res) => {
     const estimatedTime = calculateTotalTime(processedItems) + 20;
 
     const order = await Order.create({
-      orderNumber: generateOrderNumber(),
-      branchId:    req.user.branchId,
-      orderType:   'delivery',
-      items:       processedItems,
+      orderNumber:   generateOrderNumber(),
+      branchId:      req.user.branchId,
+      orderType:     'delivery',
+      items:         processedItems,
       subtotal, tax, total, estimatedTime,
       deliveryBoyId: req.user._id,
       customerName, customerPhone, deliveryAddress, notes,
@@ -114,9 +128,13 @@ exports.createDeliveryOrder = async (req, res) => {
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId', 'name');
+      .populate('items.itemId',  'name');
 
-    res.status(201).json({ success: true, order: populatedOrder, message: 'Delivery order created successfully' });
+    res.status(201).json({
+      success: true,
+      order:   populatedOrder,
+      message: 'Delivery order created successfully',
+    });
   } catch (error) {
     console.error('Create delivery order error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -124,15 +142,14 @@ exports.createDeliveryOrder = async (req, res) => {
 };
 
 // ========== MY ORDERS ==========
-// ✅ FIX: includes 'returned' so delivery boy sees his order until cashier completes it
 
 exports.getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({
       deliveryBoyId: req.user._id,
-      status: { $nin: ['completed', 'cancelled'] },   // show everything except completed/cancelled
+      status: { $nin: ['completed', 'cancelled'] },
     })
-      .populate('chefId',  'name')
+      .populate('chefId',       'name')
       .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
       .lean();
@@ -152,9 +169,9 @@ exports.getUnassignedOrders = async (req, res) => {
 
     const orders = await Order.find({
       branchId,
-      orderType:    'delivery',
-      status:       'ready',        // chef ne ready kar diya
-      deliveryBoyId: null,          // koi assign nahi
+      orderType:     'delivery',
+      status:        'ready',
+      deliveryBoyId: null,
     })
       .populate('waiterId',     'name')
       .populate('items.itemId', 'name')
@@ -176,7 +193,13 @@ exports.claimOrder = async (req, res) => {
     if (!orderId) return res.status(400).json({ success: false, message: 'orderId is required' });
 
     const order = await Order.findOneAndUpdate(
-      { _id: orderId, orderType: 'delivery', status: 'ready', deliveryBoyId: null, branchId: req.user.branchId },
+      {
+        _id:           orderId,
+        orderType:     'delivery',
+        status:        'ready',
+        deliveryBoyId: null,
+        branchId:      req.user.branchId,
+      },
       { $set: { deliveryBoyId: req.user._id } },
       { new: true }
     )
@@ -185,7 +208,10 @@ exports.claimOrder = async (req, res) => {
       .populate('items.itemId',  'name');
 
     if (!order) {
-      return res.status(409).json({ success: false, message: 'Yeh order pehle hi kisi aur ne claim kar li ya available nahi hai' });
+      return res.status(409).json({
+        success: false,
+        message: 'Yeh order pehle hi kisi aur ne claim kar li ya available nahi hai',
+      });
     }
 
     const io = req.app.get('io');
@@ -205,11 +231,12 @@ exports.claimOrder = async (req, res) => {
   }
 };
 
-// ========== UPDATE ORDER STATUS (departure → out_for_delivery) ==========
+// ========== UPDATE ORDER STATUS (out_for_delivery) ==========
+// ✅ No meter reading — just status update + departedAt timestamp
 
 exports.updateOrderStatus = async (req, res) => {
   try {
-    const { orderId, status, startMeterReading, startMeterImage } = req.body;
+    const { orderId, status } = req.body;
 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -220,17 +247,9 @@ exports.updateOrderStatus = async (req, res) => {
 
     order.status = status;
 
-    // ✅ FIX: Save start meter reading + optional image when departing
     if (status === 'out_for_delivery') {
-      if (startMeterReading !== undefined) {
-        order.startMeterReading = parseFloat(startMeterReading);
-      }
-      if (startMeterImage) {
-        order.startMeterImage = startMeterImage;   // base64 string from camera
-      }
       order.departedAt = new Date();
     }
-
     if (status === 'delivered') {
       order.deliveredAt = new Date();
     }
@@ -248,17 +267,19 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-// ========== COMPLETE DELIVERY — delivery boy returns to restaurant ==========
-// ✅ FIX: status set to 'returned' (now valid in enum via constants.js fix)
-// Flow: out_for_delivery → returned (by delivery boy) → completed (by cashier)
-// Cashier will see 'returned' orders and complete them after verifying cash.
+// ========== COMPLETE DELIVERY — delivery boy returns ==========
+// ✅ No meter — only cashReceived required
+// Flow: out_for_delivery → returned (delivery boy) → completed (cashier)
 
 exports.completeDelivery = async (req, res) => {
   try {
-    const { orderId, endMeterReading, cashReceived, distanceTravelled, endMeterImage } = req.body;
+    const { orderId, cashReceived } = req.body;
 
-    if (!orderId || endMeterReading === undefined || cashReceived === undefined) {
-      return res.status(400).json({ success: false, message: 'orderId, endMeterReading, and cashReceived are required' });
+    if (!orderId || cashReceived === undefined || cashReceived === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'orderId and cashReceived are required',
+      });
     }
 
     const order = await Order.findById(orderId);
@@ -269,22 +290,15 @@ exports.completeDelivery = async (req, res) => {
     }
 
     if (order.status !== 'out_for_delivery') {
-      return res.status(400).json({ success: false, message: 'Order must be out_for_delivery to mark as returned' });
+      return res.status(400).json({
+        success: false,
+        message: 'Order must be out_for_delivery to mark as returned',
+      });
     }
 
-    // ✅ FIX: 'returned' is now a valid status (added to constants.js OrderStatus)
-    order.status           = 'returned';
-    order.endMeterReading  = parseFloat(endMeterReading);
-    order.cashReceived     = parseFloat(cashReceived);
-    order.distanceTravelled = distanceTravelled != null
-      ? parseFloat(distanceTravelled)
-      : (order.startMeterReading ? parseFloat(endMeterReading) - order.startMeterReading : 0);
-    order.returnedAt       = new Date();
-
-    // ✅ NEW: Save end meter photo if provided
-    if (endMeterImage) {
-      order.endMeterImage = endMeterImage;
-    }
+    order.status       = 'returned';
+    order.cashReceived = parseFloat(cashReceived);
+    order.returnedAt   = new Date();
 
     await order.save();
 
@@ -296,16 +310,59 @@ exports.completeDelivery = async (req, res) => {
       success: true,
       order:   populatedOrder,
       summary: {
-        distanceTravelled: order.distanceTravelled,
-        cashReceived:      order.cashReceived,
-        orderTotal:        order.total,
-        change:            parseFloat(cashReceived) - order.total,
+        cashReceived: order.cashReceived,
+        orderTotal:   order.total,
+        change:       parseFloat(cashReceived) - order.total,
       },
-      // ✅ KEY MESSAGE: tell delivery boy cashier will complete the order
-      message: '🏠 Wapas aa gaye! Cashier se payment verify karwaein — woh order complete karega aur slip print karega.',
+      message: '🏠 Wapas aa gaye! Cashier se payment verify karwaein — woh order complete karega.',
     });
   } catch (error) {
     console.error('Complete delivery error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== REQUEST PRINT (same as waiter) ==========
+// ✅ Delivery boy calls this on Depart — Cashier Desktop picks it up and prints
+// This reuses the existing waiter requestPrint logic via shared Order model
+// Route: POST /delivery/orders/:id/print-request  (add to deliver.js)
+
+exports.requestPrint = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const order   = await Order.findById(orderId);
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // ✅ Verify delivery boy owns this order
+    if (String(order.deliveryBoyId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
+
+    // Set printRequested flag — Cashier Desktop polls/listens for this
+    order.printRequested = true;
+    order.printRequestedAt = new Date();
+    await order.save();
+
+    // Emit socket event so Cashier Desktop prints immediately if online
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${req.user.branchId}`).emit('print-request', {
+        orderId:     String(order._id),
+        orderNumber: order.orderNumber,
+        orderType:   'delivery',
+        requestedBy: req.user.name || 'Delivery Boy',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Print request sent for order #${order.orderNumber}`,
+    });
+  } catch (error) {
+    console.error('Request print error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -325,11 +382,16 @@ exports.updateOrder = async (req, res) => {
     }
 
     if (order.status !== 'pending') {
-      return res.status(400).json({ success: false, message: 'Cannot update order after chef acceptance' });
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot update order after chef acceptance',
+      });
     }
 
     if (items) {
-      if (items.length === 0) return res.status(400).json({ success: false, message: 'Order must have at least one item' });
+      if (items.length === 0) {
+        return res.status(400).json({ success: false, message: 'Order must have at least one item' });
+      }
       const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
       const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
       order.items         = processedItems;
@@ -339,10 +401,10 @@ exports.updateOrder = async (req, res) => {
       order.estimatedTime = calculateTotalTime(processedItems) + 20;
     }
 
-    if (customerName)    order.customerName    = customerName;
-    if (customerPhone)   order.customerPhone   = customerPhone;
-    if (deliveryAddress) order.deliveryAddress = deliveryAddress;
-    if (notes !== undefined) order.notes = notes;
+    if (customerName)        order.customerName    = customerName;
+    if (customerPhone)       order.customerPhone   = customerPhone;
+    if (deliveryAddress)     order.deliveryAddress = deliveryAddress;
+    if (notes !== undefined) order.notes           = notes;
 
     await order.save();
 
@@ -357,6 +419,8 @@ exports.updateOrder = async (req, res) => {
   }
 };
 
+// ========== DELIVERY HISTORY ==========
+
 exports.getDeliveryHistory = async (req, res) => {
   try {
     const orders = await Order.find({
@@ -365,7 +429,7 @@ exports.getDeliveryHistory = async (req, res) => {
     })
       .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
-      .limit(100)   // last 100 deliveries
+      .limit(100)
       .lean();
 
     res.json({ success: true, orders, count: orders.length });

@@ -392,11 +392,31 @@ exports.getMyInventory = async (req, res) => {
   try {
     const { today, tomorrow } = getTodayRange();
 
-    const chefInventory = await ChefInventory.findOne({
+    // ✅ FIX: status filter hata diya — aaj ki koi bhi record dikhao
+    // Pehle active dhundo, nahi mili toh partial_return, nahi mili toh returned
+    let chefInventory = await ChefInventory.findOne({
       chefId: req.user._id,
       status: 'active',
       date: { $gte: today, $lt: tomorrow },
     }).populate('items.inventoryItemId', 'name unit currentStock');
+
+    if (!chefInventory) {
+      // Active nahi mili — partial_return dhundo
+      chefInventory = await ChefInventory.findOne({
+        chefId: req.user._id,
+        status: 'partial_return',
+        date: { $gte: today, $lt: tomorrow },
+      }).populate('items.inventoryItemId', 'name unit currentStock');
+    }
+
+    if (!chefInventory) {
+      // Partial return bhi nahi — returned dhundo (officer ne le liya)
+      chefInventory = await ChefInventory.findOne({
+        chefId: req.user._id,
+        status: 'returned',
+        date: { $gte: today, $lt: tomorrow },
+      }).populate('items.inventoryItemId', 'name unit currentStock');
+    }
 
     res.json({ success: true, chefInventory: chefInventory || null });
   } catch (error) {
