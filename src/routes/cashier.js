@@ -13,6 +13,7 @@ const {
   getPaymentSlip,
   getHourlyIncomeReport,
   updateOrderStatus,
+  createOrder,              // ✅ NEW
   createProduct,
   updateProduct,
   getProducts,
@@ -26,7 +27,7 @@ const {
   seedTables,
   receiveAdvancePayment,
   completeAdvancePaidOrder,
-  getOrderById,               // ✅ NEW — now properly exported from controller
+  getOrderById,
 } = require('../controllers/cashierController');
 
 const {
@@ -50,13 +51,16 @@ router.use(checkRole(UserRole.CASHIER));
 router.get('/orders/pending',   getPendingOrders);
 router.get('/orders/completed', getCompletedOrders);
 
-// ✅ FIX: Advance payment routes BEFORE /:id to avoid conflict
-router.post('/orders/:id/advance-payment',  receiveAdvancePayment);
-router.post('/orders/:id/complete-advance', completeAdvancePaidOrder);
-router.put('/orders/:id/status',            updateOrderStatus);
+// ✅ NEW: Create order from POS/cashier desktop
+router.post('/orders',                          createOrder);
 
-// ✅ NEW: Single order fetch (used by socket fallback + reprint)
-router.get('/orders/:id', getOrderById);
+// Advance payment routes BEFORE /:id to avoid conflict
+router.post('/orders/:id/advance-payment',      receiveAdvancePayment);
+router.post('/orders/:id/complete-advance',     completeAdvancePaidOrder);
+router.put('/orders/:id/status',                updateOrderStatus);
+
+// Single order fetch (used by socket fallback + reprint)
+router.get('/orders/:id',                       getOrderById);
 
 // ===== PAYMENTS =====
 router.post('/payment',         receivePayment);
