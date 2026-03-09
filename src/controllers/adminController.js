@@ -9,7 +9,9 @@ const Product = require('../models/Product');
 const Deal = require('../models/Deal');
 const bcrypt = require('bcryptjs');
 const { getMonthDateRange } = require('../utils/dateHelpers');
-const Table   = require('../models/Table');
+const Table = require('../models/Table');
+const Expense = require('../models/Expense');
+const CustomerWallet = require('../models/Customerwallet');
 
 // ========== DASHBOARD ==========
 exports.getDashboard = async (req, res) => {
@@ -442,12 +444,12 @@ exports.deleteOrder = async (req, res) => {
     if (order.orderType === 'dine_in' && order.tableNumber && order.branchId) {
       await Table.findOneAndUpdate(
         {
-          branchId:    order.branchId,
+          branchId: order.branchId,
           tableNumber: order.tableNumber,
           ...(order.floor ? { floor: order.floor } : {}),
         },
         {
-          isOccupied:     false,
+          isOccupied: false,
           currentOrderId: null,
         }
       );
@@ -831,6 +833,72 @@ exports.permanentDeleteUser = async (req, res) => {
     await User.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: `${user.name} permanently delete ho gaya` });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getFinanceSummary = async (req, res) => {
+  try {
+    const { branchId } = req.query;
+    let expQuery = {};
+    let walletQuery = { isActive: true };
+
+    if (branchId) {
+      expQuery.branchId = branchId;
+      walletQuery.branchId = branchId;
+    }
+
+    // Get all expenses across all branches
+    const expenses = await Expense.find(expQuery)
+      .populate('addedBy', 'name')
+      .populate('branchId', 'name')
+      .sort({ date: -1 })
+      .limit(500); // last 500 expenses
+
+    // Get all customer wallets
+    const customers = await CustomerWallet.find(walletQuery)
+      .select('-transactions')
+      .populate('branchId', 'name')
+      .sort({ name: 1 });
+
+    const totalAdvance = customers.filter(c => c.balance > 0).reduce((s, c) => s + c.balance, 0);
+    const totalDebt = customers.filter(c => c.balance < 0).reduce((s, c) => s + Math.abs(c.balance), 0);
+    const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+
+    const expenseByCategory = expenses.reduce((acc, e) => {
+      acc[e.category] = (acc[e.category] || 0) + e.amount;
+      return acc;
+    }, {});
+
+    const expenseByBranch = expenses.reduce((acc, e) => {
+      const bn = e.branchId?.name || 'Unknown';
+      acc[bn] = (acc[bn] || 0) + e.amount;
+      return acc;
+    }, {});
+
+    res.json({
+      success: true,
+      expenses,
+      wallet: {
+        summary: {
+          totalCustomers: customers.length,
+          totalAdvance,
+          totalDebt,
+          debtCustomers: customers.filter(c => c.balance < 0).length,
+          advanceCustomers: customers.filter(c => c.balance > 0).length,
+          netBalance: totalAdvance - totalDebt,
+        },
+        customers,
+      },
+      summary: {
+        totalExpenses,
+        expenseByCategory,
+        expenseByBranch,
+        expenseCount: expenses.length,
+      },
+    });
+  } catch (error) {
+    console.error('getFinanceSummary Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
