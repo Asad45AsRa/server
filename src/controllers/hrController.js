@@ -5,19 +5,12 @@ const { getMonthDateRange, calculateHours } = require('../utils/dateHelpers');
 
 /* ================================================================
    HELPER — Auto generate email from role + name
-   Format: role.firstname@almadina.com
-   e.g.  waiter.umar@almadina.com  |  chef.asad@almadina.com
    ================================================================ */
 const generateEmail = async (role, name) => {
-  // Take only first word of name, lowercase, remove non-alphanumeric
   const firstName = name.trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '');
   const base = `${role}.${firstName}@almadina.com`;
-
-  // Check if base email already taken
   const exists = await User.findOne({ email: base });
   if (!exists) return base;
-
-  // Add numeric suffix until unique
   let n = 2;
   while (true) {
     const candidate = `${role}.${firstName}${n}@almadina.com`;
@@ -25,6 +18,14 @@ const generateEmail = async (role, name) => {
     if (!taken) return candidate;
     n++;
   }
+};
+
+/* ================================================================
+   HELPER — Calculate overtime from hours worked
+   regularHours default = 8 per day
+   ================================================================ */
+const calcOvertime = (hoursWorked, regularHoursPerDay = 8) => {
+  return Math.max(0, hoursWorked - regularHoursPerDay);
 };
 
 /* ================================================================
@@ -38,64 +39,60 @@ exports.createEmployee = async (req, res) => {
       name, cnic, phone, address, password, role,
       wageType, hourlyRate, dailyRate, monthlyRate,
       leavesPerMonth, joiningDate, branchId,
-      email: providedEmail,   // optional — frontend can omit, we auto-generate
+      regularHoursPerDay,        // ✅ NEW: working hours per day
+      overtimeRateMultiplier,    // ✅ NEW: e.g. 1.5x for overtime
+      email: providedEmail,
     } = req.body;
 
-    // ── Validation ──────────────────────────────────────────────
     if (!name || !password || !phone || !role)
       return res.status(400).json({ success: false, message: 'name, password, phone, role are required' });
 
     if (password.length < 6)
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
 
-    // ── Email: use provided or auto-generate ────────────────────
     let email = providedEmail ? providedEmail.trim().toLowerCase() : null;
-
     if (!email) {
       email = await generateEmail(role, name);
     } else {
-      // If manually provided, check uniqueness
       if (await User.findOne({ email }))
         return res.status(400).json({ success: false, message: 'Email already registered' });
     }
 
-    // ── Create user ──────────────────────────────────────────────
     const employee = await User.create({
-      name:           name.trim(),
-      cnic:           cnic          || '',
-      phone:          phone.trim(),
-      address:        address       || '',
+      name:                  name.trim(),
+      cnic:                  cnic          || '',
+      phone:                 phone.trim(),
+      address:               address       || '',
       email,
       password,
       role,
-      branchId:       branchId || req.user.branchId || null,
-      wageType:       wageType      || 'monthly',
-      hourlyRate:     Number(hourlyRate)  || 0,
-      dailyRate:      Number(dailyRate)   || 0,
-      monthlyRate:    Number(monthlyRate) || 0,
-      leavesPerMonth: Number(leavesPerMonth) || 2,
-      joinDate:       joiningDate   ? new Date(joiningDate) : new Date(),
-      isApproved:     false,
-      isActive:       true,
-      createdBy:      req.user._id,
+      branchId:              branchId || req.user.branchId || null,
+      wageType:              wageType      || 'monthly',
+      hourlyRate:            Number(hourlyRate)  || 0,
+      dailyRate:             Number(dailyRate)   || 0,
+      monthlyRate:           Number(monthlyRate) || 0,
+      leavesPerMonth:        Number(leavesPerMonth) || 2,
+      regularHoursPerDay:    Number(regularHoursPerDay) || 8,   // ✅
+      overtimeRateMultiplier:Number(overtimeRateMultiplier) || 1.5, // ✅
+      joinDate:              joiningDate ? new Date(joiningDate) : new Date(),
+      isApproved:            false,
+      isActive:              true,
+      createdBy:             req.user._id,
     });
 
-    // Return without password — but include generated email + credentials hint
     const emp = employee.toObject();
     delete emp.password;
 
     res.status(201).json({
       success:  true,
       employee: emp,
-      // ✅ Return credentials so HR can share with employee
       credentials: {
         email,
-        password,           // plain text so HR can write it down / share
+        password,
         loginNote: 'Employee can login after Admin approves the account.',
       },
       message: `${employee.name} added as ${role}. Pending admin approval.`,
     });
-
   } catch (err) {
     console.error('createEmployee error:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -142,35 +139,51 @@ exports.updateEmployee = async (req, res) => {
 };
 
 /* ================================================================
-   ATTENDANCE
+   ATTENDANCE  — with auto overtime calculation
    ================================================================ */
 
 // POST /hr/attendance
 exports.markAttendance = async (req, res) => {
   try {
-    const { userId, date, status, checkIn, checkOut, notes, overtime } = req.body;
+    const { userId, date, status, checkIn, checkOut, notes, manualOvertime } = req.body;
     const dateStr = new Date(date).toISOString().split('T')[0];
 
-    let hoursWorked = 0;
-    if (checkIn && checkOut)
-      hoursWorked = calculateHours(
+    // Get employee to know their regularHoursPerDay
+    const employee = await User.findById(userId).select('regularHoursPerDay');
+    const regularHours = employee?.regularHoursPerDay || 8;
+
+    let hoursWorked    = 0;
+    let overtimeHours  = 0;
+    let totalOvertime  = 0;
+
+    if (checkIn && checkOut) {
+      hoursWorked   = calculateHours(
         new Date(dateStr + 'T' + checkIn),
         new Date(dateStr + 'T' + checkOut)
       );
+      // Auto-calculate overtime
+      overtimeHours = calcOvertime(hoursWorked, regularHours);
+    }
+
+    const manOT       = parseFloat(manualOvertime) || 0;
+    totalOvertime     = overtimeHours + manOT;
 
     const attendance = await Attendance.findOneAndUpdate(
       { userId, date: new Date(date) },
       {
         userId,
-        branchId:    req.user.branchId,
-        date:        new Date(date),
-        checkIn:     checkIn  ? new Date(dateStr + 'T' + checkIn)  : null,
-        checkOut:    checkOut ? new Date(dateStr + 'T' + checkOut) : null,
+        branchId:           req.user.branchId,
+        date:               new Date(date),
+        checkIn:            checkIn  ? new Date(dateStr + 'T' + checkIn)  : null,
+        checkOut:           checkOut ? new Date(dateStr + 'T' + checkOut) : null,
         status,
         hoursWorked,
-        notes:       notes    || '',
-        overtime:    parseFloat(overtime) || 0,
-        markedBy:    req.user._id,
+        regularHoursPerDay: regularHours,
+        overtimeHours,
+        manualOvertime:     manOT,
+        totalOvertime,
+        notes:              notes || '',
+        markedBy:           req.user._id,
       },
       { new: true, upsert: true }
     );
@@ -187,28 +200,46 @@ exports.bulkMarkAttendance = async (req, res) => {
     if (!Array.isArray(req.body))
       return res.status(400).json({ success: false, message: 'Array expected' });
 
+    // Pre-fetch all employees for regularHoursPerDay
+    const userIds    = [...new Set(req.body.map(r => r.userId))];
+    const employees  = await User.find({ _id: { $in: userIds } }).select('_id regularHoursPerDay');
+    const empMap     = {};
+    employees.forEach(e => { empMap[e._id.toString()] = e.regularHoursPerDay || 8; });
+
     const results = await Promise.allSettled(req.body.map(r => {
-      const dateStr = new Date(r.date).toISOString().split('T')[0];
-      const hoursWorked = (r.checkIn && r.checkOut)
-        ? calculateHours(
-            new Date(dateStr + 'T' + r.checkIn),
-            new Date(dateStr + 'T' + r.checkOut)
-          )
-        : 0;
+      const dateStr     = new Date(r.date).toISOString().split('T')[0];
+      const regularHrs  = empMap[r.userId] || 8;
+
+      let hoursWorked   = 0;
+      let overtimeHours = 0;
+
+      if (r.checkIn && r.checkOut) {
+        hoursWorked   = calculateHours(
+          new Date(dateStr + 'T' + r.checkIn),
+          new Date(dateStr + 'T' + r.checkOut)
+        );
+        overtimeHours = calcOvertime(hoursWorked, regularHrs);
+      }
+
+      const manOT       = parseFloat(r.manualOvertime) || 0;
+      const totalOT     = overtimeHours + manOT;
 
       return Attendance.findOneAndUpdate(
         { userId: r.userId, date: new Date(r.date) },
         {
-          userId:      r.userId,
-          branchId:    req.user.branchId,
-          date:        new Date(r.date),
-          checkIn:     r.checkIn  ? new Date(dateStr + 'T' + r.checkIn)  : null,
-          checkOut:    r.checkOut ? new Date(dateStr + 'T' + r.checkOut) : null,
-          status:      r.status,
+          userId:             r.userId,
+          branchId:           req.user.branchId,
+          date:               new Date(r.date),
+          checkIn:            r.checkIn  ? new Date(dateStr + 'T' + r.checkIn)  : null,
+          checkOut:           r.checkOut ? new Date(dateStr + 'T' + r.checkOut) : null,
+          status:             r.status,
           hoursWorked,
-          notes:       r.notes    || '',
-          overtime:    parseFloat(r.overtime) || 0,
-          markedBy:    req.user._id,
+          regularHoursPerDay: regularHrs,
+          overtimeHours,
+          manualOvertime:     manOT,
+          totalOvertime:      totalOT,
+          notes:              r.notes || '',
+          markedBy:           req.user._id,
         },
         { new: true, upsert: true }
       );
@@ -233,7 +264,7 @@ exports.getAttendance = async (req, res) => {
     }
 
     const attendance = await Attendance.find(q)
-      .populate('userId', 'name email role')
+      .populate('userId', 'name email role regularHoursPerDay')
       .sort({ date: -1 });
 
     res.json({ success: true, attendance });
@@ -247,6 +278,7 @@ exports.getAttendanceSummary = async (req, res) => {
   try {
     const q = {};
     if (req.query.branchId) q.branchId = req.query.branchId;
+    if (req.query.userId)   q.userId   = req.query.userId;
     if (req.query.month && req.query.year) {
       const { startDate, endDate } = getMonthDateRange(req.query.month, req.query.year);
       q.date = { $gte: startDate, $lte: endDate };
@@ -255,7 +287,8 @@ exports.getAttendanceSummary = async (req, res) => {
     const records      = await Attendance.find(q);
     const by           = s => records.filter(r => r.status === s).length;
     const presentCount = by('present');
-    const totalHours   = records.reduce((s, r) => s + (r.hoursWorked || 0), 0);
+    const totalHours   = records.reduce((s, r) => s + (r.hoursWorked   || 0), 0);
+    const totalOT      = records.reduce((s, r) => s + (r.totalOvertime || 0), 0);
 
     res.json({
       success: true,
@@ -266,7 +299,7 @@ exports.getAttendanceSummary = async (req, res) => {
         totalLeave:    by('leave'),
         totalHoliday:  by('holiday'),
         totalHours,
-        totalOvertime: records.reduce((s, r) => s + (r.overtime || 0), 0),
+        totalOvertime: totalOT,
         avgHours:      presentCount > 0 ? totalHours / presentCount : 0,
       },
     });
@@ -276,7 +309,99 @@ exports.getAttendanceSummary = async (req, res) => {
 };
 
 /* ================================================================
-   SALARY
+   ADVANCE SALARY
+   ================================================================ */
+
+// POST /hr/salary/advance  — give advance to employee
+exports.giveAdvance = async (req, res) => {
+  try {
+    const { userId, amount, reason, month, year } = req.body;
+
+    if (!userId || !amount || amount <= 0)
+      return res.status(400).json({ success: false, message: 'userId and amount > 0 required' });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const currentMonth = month || new Date().getMonth() + 1;
+    const currentYear  = year  || new Date().getFullYear();
+
+    // Find or create salary record for that month
+    let salary = await Salary.findOne({ userId, month: currentMonth, year: currentYear });
+
+    const advanceEntry = {
+      amount:   Number(amount),
+      date:     new Date(),
+      reason:   reason || '',
+      givenBy:  req.user._id,
+      deducted: false,
+    };
+
+    if (salary) {
+      salary.advances.push(advanceEntry);
+      salary.totalAdvancePaid = (salary.totalAdvancePaid || 0) + Number(amount);
+      await salary.save();
+    } else {
+      // Create a placeholder salary record to track advances
+      salary = await Salary.create({
+        userId,
+        branchId:        user.branchId,
+        month:           currentMonth,
+        year:            currentYear,
+        wageType:        user.wageType || 'monthly',
+        hourlyRate:      user.hourlyRate  || 0,
+        dailyRate:       user.dailyRate   || 0,
+        monthlyRate:     user.monthlyRate || 0,
+        totalHours:      0,
+        baseSalary:      0,
+        totalSalary:     0,
+        netPayable:      0,
+        advances:        [advanceEntry],
+        totalAdvancePaid:Number(amount),
+      });
+    }
+
+    res.json({
+      success: true,
+      salary,
+      message: `Advance of Rs. ${amount} given to ${user.name}`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /hr/salary/advances/:userId  — advance history for an employee
+exports.getAdvanceHistory = async (req, res) => {
+  try {
+    const salaries = await Salary.find({ userId: req.params.userId })
+      .select('month year advances totalAdvancePaid advanceDeducted')
+      .populate('advances.givenBy', 'name')
+      .sort({ year: -1, month: -1 });
+
+    const allAdvances = [];
+    salaries.forEach(s => {
+      (s.advances || []).forEach(a => {
+        allAdvances.push({
+          ...a.toObject(),
+          month: s.month,
+          year:  s.year,
+        });
+      });
+    });
+
+    const totalPending = salaries.reduce((sum, s) => {
+      return sum + (s.advances || []).filter(a => !a.deducted).reduce((x, a) => x + a.amount, 0);
+    }, 0);
+
+    res.json({ success: true, advances: allAdvances, totalPending });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/* ================================================================
+   SALARY — Calculate & Create with full advance deduction
    ================================================================ */
 
 // POST /hr/salary/calculate
@@ -289,47 +414,81 @@ exports.calculateMonthlySalary = async (req, res) => {
     if (!user)
       return res.status(404).json({ success: false, message: 'Employee not found' });
 
-    const records = await Attendance.find({ userId, date: { $gte: startDate, $lte: endDate } });
-    const present = records.filter(r => ['present', 'half_day'].includes(r.status));
+    const records  = await Attendance.find({ userId, date: { $gte: startDate, $lte: endDate } });
+    const present  = records.filter(r => ['present', 'half_day'].includes(r.status));
     const wageType = user.wageType || 'monthly';
 
-    let baseSalary = 0;
+    // Total overtime hours this month
+    const totalOvertimeHours = records.reduce((s, r) => s + (r.totalOvertime || 0), 0);
+
+    // Overtime rate = hourlyRate * overtimeRateMultiplier (default 1.5x)
+    const overtimeMultiplier = user.overtimeRateMultiplier || 1.5;
+    const hourlyEquivalent   =
+      wageType === 'hourly'  ? (user.hourlyRate  || 0) :
+      wageType === 'daily'   ? (user.dailyRate   || 0) / (user.regularHoursPerDay || 8) :
+      /* monthly */            (user.monthlyRate || 0) / 26 / (user.regularHoursPerDay || 8);
+    const overtimeRate = hourlyEquivalent * overtimeMultiplier;
+    const overtimePay  = totalOvertimeHours * overtimeRate;
+
+    // Get existing advances this month
+    const existingSalary     = await Salary.findOne({ userId, month, year });
+    const totalAdvancePaid   = existingSalary?.totalAdvancePaid || 0;
+
+    let baseSalary   = 0;
+    let calculation  = {};
 
     if (wageType === 'hourly') {
-      const totalHours = present.reduce(
-        (s, a) => s + (a.status === 'half_day' ? a.hoursWorked / 2 : a.hoursWorked), 0
-      );
-      const overtime = present.reduce((s, a) => s + (a.overtime || 0), 0);
-      baseSalary = (totalHours + overtime) * (user.hourlyRate || 0);
-      return res.json({
-        success: true,
-        calculation: { wageType, totalHours, overtime, rateUsed: user.hourlyRate, baseSalary },
-      });
-    }
-
-    if (wageType === 'daily') {
-      const days = present.reduce((s, a) => s + (a.status === 'half_day' ? 0.5 : 1), 0);
-      baseSalary = days * (user.dailyRate || 0);
-      return res.json({
-        success: true,
-        calculation: { wageType, daysPresent: days, rateUsed: user.dailyRate, baseSalary },
-      });
-    }
-
-    // monthly
-    const absences = records.filter(r => r.status === 'absent').length;
-    const leaves   = records.filter(r => r.status === 'leave').length;
-    const allowed  = user.leavesPerMonth || 2;
-    const unpaid   = Math.max(0, leaves - allowed) + absences;
-    baseSalary = Math.max(0, (user.monthlyRate || 0) - unpaid * ((user.monthlyRate || 0) / 26));
-
-    res.json({
-      success: true,
-      calculation: {
+      // For hourly: use regular hours only (not overtime hours, those are separate)
+      const regularHours = present.reduce((s, a) => {
+        const hrs = a.hoursWorked || 0;
+        const reg = Math.min(hrs, a.regularHoursPerDay || user.regularHoursPerDay || 8);
+        return s + (a.status === 'half_day' ? reg / 2 : reg);
+      }, 0);
+      baseSalary = regularHours * (user.hourlyRate || 0);
+      calculation = {
+        wageType, regularHours, totalOvertimeHours,
+        overtimeRate: overtimeRate.toFixed(2),
+        overtimePay:  overtimePay.toFixed(2),
+        rateUsed: user.hourlyRate, baseSalary,
+        totalAdvancePaid,
+        netAfterAdvance: Math.max(0, baseSalary + overtimePay - totalAdvancePaid),
+      };
+    } else if (wageType === 'daily') {
+      const days     = present.reduce((s, a) => s + (a.status === 'half_day' ? 0.5 : 1), 0);
+      baseSalary     = days * (user.dailyRate || 0);
+      const totalHrs = present.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      calculation    = {
+        wageType, daysPresent: days, totalHours: totalHrs,
+        totalOvertimeHours,
+        overtimeRate: overtimeRate.toFixed(2),
+        overtimePay:  overtimePay.toFixed(2),
+        rateUsed: user.dailyRate, baseSalary,
+        totalAdvancePaid,
+        netAfterAdvance: Math.max(0, baseSalary + overtimePay - totalAdvancePaid),
+      };
+    } else {
+      // Monthly
+      const absences = records.filter(r => r.status === 'absent').length;
+      const leaves   = records.filter(r => r.status === 'leave').length;
+      const allowed  = user.leavesPerMonth || 2;
+      const unpaid   = Math.max(0, leaves - allowed) + absences;
+      const perDay   = (user.monthlyRate || 0) / 26;
+      baseSalary     = Math.max(0, (user.monthlyRate || 0) - unpaid * perDay);
+      const totalHrs = present.reduce((s, a) => s + (a.hoursWorked || 0), 0);
+      calculation    = {
         wageType, rateUsed: user.monthlyRate,
-        absences, leaves, allowed, unpaid, baseSalary,
-      },
-    });
+        absences, leaves, allowed, unpaid,
+        totalHours: totalHrs,
+        totalOvertimeHours,
+        overtimeRate: overtimeRate.toFixed(2),
+        overtimePay:  overtimePay.toFixed(2),
+        baseSalary,
+        totalAdvancePaid,
+        netAfterAdvance: Math.max(0, baseSalary + overtimePay - totalAdvancePaid),
+      };
+    }
+
+    res.json({ success: true, calculation });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -338,31 +497,75 @@ exports.calculateMonthlySalary = async (req, res) => {
 // POST /hr/salary
 exports.createSalary = async (req, res) => {
   try {
-    const { userId, month, year, baseSalary, bonus, deductions, notes } = req.body;
-    const user = await User.findById(userId);
-    const { startDate, endDate } = getMonthDateRange(month, year);
+    const {
+      userId, month, year,
+      baseSalary, bonus, deductions,
+      advanceDeducted,  // ✅ How much advance to deduct this month
+      notes,
+    } = req.body;
 
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const { startDate, endDate } = getMonthDateRange(month, year);
     const records    = await Attendance.find({ userId, date: { $gte: startDate, $lte: endDate } });
-    const totalHours = records.reduce((s, r) => s + (r.hoursWorked || 0), 0);
-    const total      = Math.max(0,
-      parseFloat(baseSalary) + parseFloat(bonus || 0) - parseFloat(deductions || 0)
-    );
+    const totalHours = records.reduce((s, r) => s + (r.hoursWorked   || 0), 0);
+    const totalOT    = records.reduce((s, r) => s + (r.totalOvertime || 0), 0);
+
+    // Calculate overtime pay
+    const overtimeMultiplier = user.overtimeRateMultiplier || 1.5;
+    const hourlyEquivalent   =
+      user.wageType === 'hourly'  ? (user.hourlyRate  || 0) :
+      user.wageType === 'daily'   ? (user.dailyRate   || 0) / (user.regularHoursPerDay || 8) :
+      (user.monthlyRate || 0) / 26 / (user.regularHoursPerDay || 8);
+    const overtimeRate = hourlyEquivalent * overtimeMultiplier;
+    const overtimePay  = totalOT * overtimeRate;
+
+    // Advance handling
+    const advDed   = parseFloat(advanceDeducted) || 0;
+    const grossPay = parseFloat(baseSalary) + overtimePay + parseFloat(bonus || 0);
+    const total    = Math.max(0, grossPay - parseFloat(deductions || 0) - advDed);
+
+    // Get existing record (may have advances recorded)
+    const existing = await Salary.findOne({ userId, month, year });
+
+    const salaryData = {
+      userId,
+      branchId:        user.branchId,
+      month,
+      year,
+      wageType:        user.wageType     || 'monthly',
+      hourlyRate:      user.hourlyRate   || 0,
+      dailyRate:       user.dailyRate    || 0,
+      monthlyRate:     user.monthlyRate  || 0,
+      totalHours,
+      totalOvertime:   totalOT,
+      overtimeRate:    parseFloat(overtimeRate.toFixed(2)),
+      overtimePay:     parseFloat(overtimePay.toFixed(2)),
+      baseSalary:      parseFloat(baseSalary),
+      bonus:           parseFloat(bonus      || 0),
+      deductions:      parseFloat(deductions || 0),
+      advanceDeducted: advDed,
+      totalAdvancePaid: existing?.totalAdvancePaid || 0,
+      advances:         existing?.advances || [],
+      totalSalary:     parseFloat(grossPay.toFixed(2)),
+      netPayable:      parseFloat(total.toFixed(2)),
+      notes,
+    };
+
+    // Mark advances as deducted if advanceDeducted > 0
+    if (advDed > 0 && existing?.advances?.length) {
+      let remaining = advDed;
+      salaryData.advances = existing.advances.map(a => {
+        if (remaining <= 0 || a.deducted) return a;
+        remaining -= a.amount;
+        return { ...a.toObject(), deducted: true };
+      });
+    }
 
     const salary = await Salary.findOneAndUpdate(
       { userId, month, year },
-      {
-        userId, branchId: user.branchId, month, year,
-        wageType:    user.wageType,
-        totalHours,
-        hourlyRate:  user.hourlyRate,
-        dailyRate:   user.dailyRate,
-        monthlyRate: user.monthlyRate,
-        baseSalary,
-        bonus:       bonus      || 0,
-        deductions:  deductions || 0,
-        totalSalary: total,
-        notes,
-      },
+      salaryData,
       { new: true, upsert: true }
     );
 
@@ -382,7 +585,7 @@ exports.getSalaries = async (req, res) => {
     if (req.query.branchId) q.branchId = req.query.branchId;
 
     const salaries = await Salary.find(q)
-      .populate('userId', 'name email role wageType hourlyRate dailyRate monthlyRate')
+      .populate('userId', 'name email role wageType hourlyRate dailyRate monthlyRate regularHoursPerDay overtimeRateMultiplier')
       .populate('paidBy', 'name')
       .sort({ year: -1, month: -1 });
 

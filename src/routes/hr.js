@@ -9,21 +9,25 @@ const ctrl          = require('../controllers/hrController');
 router.use(protect);
 router.use(checkRole(UserRole.HR));
 
-// Employees
-router.post('/employees',            ctrl.createEmployee);
-router.get ('/employees',            ctrl.getAllEmployees);
-router.put ('/employees/:id',        ctrl.updateEmployee);
+// ── Employees ──────────────────────────────────────────────────
+router.post('/employees',                    ctrl.createEmployee);
+router.get ('/employees',                    ctrl.getAllEmployees);
+router.put ('/employees/:id',                ctrl.updateEmployee);
 
-// Attendance
-router.post('/attendance',           ctrl.markAttendance);
-router.post('/attendance/bulk',      ctrl.bulkMarkAttendance);
-router.get ('/attendance',           ctrl.getAttendance);
-router.get ('/attendance/summary',   ctrl.getAttendanceSummary);
+// ── Attendance ─────────────────────────────────────────────────
+router.post('/attendance',                   ctrl.markAttendance);
+router.post('/attendance/bulk',              ctrl.bulkMarkAttendance);
+router.get ('/attendance',                   ctrl.getAttendance);
+router.get ('/attendance/summary',           ctrl.getAttendanceSummary);
 
-// Salary
-router.post('/salary/calculate',     ctrl.calculateMonthlySalary);
-router.post('/salary',               ctrl.createSalary);
-router.get ('/salary',               ctrl.getSalaries);
-router.put ('/salary/:id/pay',       ctrl.paySalary);
+// ── Salary ─────────────────────────────────────────────────────
+router.post('/salary/calculate',             ctrl.calculateMonthlySalary);
+router.post('/salary',                       ctrl.createSalary);
+router.get ('/salary',                       ctrl.getSalaries);
+router.put ('/salary/:id/pay',               ctrl.paySalary);
+
+// ── Advance Salary ─────────────────────────────────────────────
+router.post('/salary/advance',               ctrl.giveAdvance);
+router.get ('/salary/advances/:userId',      ctrl.getAdvanceHistory);
 
 module.exports = router;

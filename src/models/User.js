@@ -20,11 +20,12 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role:     { type: String, enum: Object.values(UserRole), required: true },
 
-  cnic:     { type: String, default: '', trim: true },  // <-- CNIC
+  cnic:     { type: String, default: '', trim: true },
   phone:    { type: String, required: true },
   address:  { type: String, default: '' },
   branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
 
+  // ── Wage ──────────────────────────────────────────────────────
   wageType:    { type: String, enum: ['hourly', 'daily', 'monthly'], default: 'hourly' },
   hourlyRate:  { type: Number, default: 0 },
   dailyRate:   { type: Number, default: 0 },
@@ -32,13 +33,20 @@ const userSchema = new mongoose.Schema({
 
   leavesPerMonth: { type: Number, default: 2 },
 
-  isActive:     { type: Boolean, default: true },
-  isApproved:   { type: Boolean, default: false },   // admin must approve before login
-  profileImage: { type: String, default: null },
-  joinDate:     { type: Date, default: Date.now },
+  // ── Working Hours & Overtime ───────────────────────────────────
+  // Hours per day considered "regular" — anything above = overtime
+  regularHoursPerDay:     { type: Number, default: 8 },
+  // Overtime pay multiplier: 1.5 = 1.5x hourly equivalent rate
+  overtimeRateMultiplier: { type: Number, default: 1.5 },
 
-  createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  approvedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  // ── Status ────────────────────────────────────────────────────
+  isActive:     { type: Boolean, default: true },
+  isApproved:   { type: Boolean, default: false },
+  profileImage: { type: String,  default: null },
+  joinDate:     { type: Date,    default: Date.now },
+
+  createdBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
   managerRights: { type: managerRightsSchema, default: () => ({}) },
 }, { timestamps: true });
