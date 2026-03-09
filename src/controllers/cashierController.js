@@ -695,4 +695,120 @@ exports.getColdDrinks = async (req, res) => {
   }
 };
 
+exports.createOrder = async (req, res) => {
+  try {
+    const {
+      orderType,
+      tableNumber,
+      floor,
+      customerName,
+      customerPhone,
+      deliveryAddress,
+      cashierNote,
+      notes,
+      discount = 0,
+      items = [],
+    } = req.body;
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Items required' });
+    }
+
+    const branchId = req.user.branchId;
+
+    // ── Build items with price validation ──
+    let subtotal = 0;
+    const processedItems = [];
+
+    for (const item of items) {
+      const itemSubtotal = item.subtotal != null
+        ? Number(item.subtotal)
+        : Number(item.price || 0) * Number(item.quantity || 1);
+
+      subtotal += itemSubtotal;
+
+      processedItems.push({
+        itemId:          item.itemId,
+        itemType:        item.itemType || 'Product',   // 'Product' | 'Deal' | 'Inventory'
+        type:            item.type     || 'product',   // 'product' | 'deal' | 'cold_drink'
+        name:            item.name     || 'Item',
+        size:            item.size     || null,
+        quantity:        Number(item.quantity) || 1,
+        price:           Number(item.price)    || 0,
+        subtotal:        itemSubtotal,
+        preparationTime: item.preparationTime  || 0,
+        isColdDrink:     item.isColdDrink      || false,
+        coldDrinkId:     item.coldDrinkId      || null,
+        coldDrinkSizeId: item.coldDrinkSizeId  || null,
+      });
+    }
+
+    const discountAmt = Math.min(Number(discount) || 0, subtotal);
+    const total       = subtotal - discountAmt;
+
+    // ── Generate order number ──
+    const today     = new Date();
+    const dateStr   = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const count     = await Order.countDocuments({ branchId, createdAt: { $gte: new Date(today.setHours(0,0,0,0)) } });
+    const orderNumber = `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+
+    const order = await Order.create({
+      orderNumber,
+      branchId,
+      orderType:       orderType    || 'dine_in',
+      tableNumber:     tableNumber  || null,
+      floor:           floor        || null,
+      customerName:    customerName || null,
+      customerPhone:   customerPhone|| null,
+      deliveryAddress: deliveryAddress || null,
+      cashierNote:     cashierNote  || '',
+      notes:           notes        || '',
+      items:           processedItems,
+      subtotal,
+      discount:        discountAmt,
+      total,
+      tax:             0,
+      status:          'pending',
+      cashierId:       req.user._id,
+    });
+
+    // ── Mark table as occupied ──
+    if (orderType === 'dine_in' && tableNumber && floor) {
+      await Table.findOneAndUpdate(
+        { branchId, tableNumber, floor },
+        { isOccupied: true, currentOrderId: order._id }
+      );
+    }
+
+    const populatedOrder = await Order.findById(order._id)
+      .populate('cashierId',     'name')
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId');
+
+    // ── Emit socket event so kitchen gets notified ──
+    const io = req.app.get('io');
+    if (io) {
+      io.to(String(branchId)).emit('new-order', {
+        orderId:     order._id,
+        orderNumber: order.orderNumber,
+        orderType:   order.orderType,
+        tableNumber: order.tableNumber,
+        floor:       order.floor,
+        total:       order.total,
+        itemCount:   processedItems.length,
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      order:   populatedOrder,
+      message: `Order #${orderNumber} created successfully`,
+    });
+  } catch (error) {
+    console.error('Create order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;

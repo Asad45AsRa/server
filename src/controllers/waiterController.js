@@ -11,7 +11,7 @@ const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
 
 const FLOORS = ['ground_floor', 'first_floor', 'second_floor', 'outdoor'];
 const TABLES_PER_FLOOR = 30;
-const TABLE_CAPACITY   = 4;
+const TABLE_CAPACITY = 4;
 
 // ========== MENU ==========
 
@@ -26,8 +26,6 @@ exports.getMenu = async (req, res) => {
     const rawDeals = await Deal.find({
       branchId,
       isActive: true,
-      validFrom: { $lte: new Date() },
-      validUntil: { $gte: new Date() }
     })
       .populate('products.productId', 'name image')
       .lean();
@@ -164,10 +162,10 @@ exports.getTables = async (req, res) => {
       .lean();
 
     const groupedTables = {
-      ground_floor:  [],
-      first_floor:   [],
-      second_floor:  [],
-      outdoor:       [],
+      ground_floor: [],
+      first_floor: [],
+      second_floor: [],
+      outdoor: [],
     };
 
     tables.forEach(table => {
@@ -262,7 +260,7 @@ exports.createOrder = async (req, res) => {
         const floorLabel = (floor || '').replace(/_/g, ' ');
         finalCashierNote = `🪑 Dine In — Table ${tableNumber} (${floorLabel})`;
       } else if (orderType === 'takeaway') {
-        const nameStr  = customerName  ? customerName  : 'Walk-in';
+        const nameStr = customerName ? customerName : 'Walk-in';
         const phoneStr = customerPhone ? ' | ' + customerPhone : '';
         finalCashierNote = `🥡 Takeaway — ${nameStr}${phoneStr}`;
       } else if (orderType === 'delivery') {
@@ -290,7 +288,7 @@ exports.createOrder = async (req, res) => {
     }
 
     if (orderType === 'takeaway' || orderType === 'delivery') {
-      if (customerName)  orderData.customerName  = customerName;
+      if (customerName) orderData.customerName = customerName;
       if (customerPhone) orderData.customerPhone = customerPhone;
     }
 
@@ -327,7 +325,7 @@ exports.createOrder = async (req, res) => {
         });
       }
 
-      table.isOccupied     = true;
+      table.isOccupied = true;
       table.currentOrderId = order._id;
       await table.save();
     }
@@ -341,13 +339,13 @@ exports.createOrder = async (req, res) => {
       const io = req.app.get('io');
       if (io) {
         io.to(`branch-${req.user.branchId}`).emit('delivery-assigned', {
-          orderId:      String(populatedOrder._id),
-          orderNumber:  populatedOrder.orderNumber,
+          orderId: String(populatedOrder._id),
+          orderNumber: populatedOrder.orderNumber,
           customerName,
           deliveryAddress,
           total,
           deliveryBoyId: String(deliveryBoyId),
-          assignedBy:   req.user.name || 'Waiter',
+          assignedBy: req.user.name || 'Waiter',
         });
       }
     }
@@ -434,29 +432,29 @@ exports.updateOrder = async (req, res) => {
         else itemType = 'Product';
       }
       return {
-        itemId:          String(item.itemId?._id || item.itemId || ''),
-        name:            item.name || 'Item',
-        size:            item.size || null,
-        quantity:        Number(item.quantity) || 1,
-        price:           Number(item.price) || 0,
-        subtotal:        (Number(item.price) || 0) * (Number(item.quantity) || 1),
-        type:            item.type || 'product',
+        itemId: String(item.itemId?._id || item.itemId || ''),
+        name: item.name || 'Item',
+        size: item.size || null,
+        quantity: Number(item.quantity) || 1,
+        price: Number(item.price) || 0,
+        subtotal: (Number(item.price) || 0) * (Number(item.quantity) || 1),
+        type: item.type || 'product',
         itemType,
-        isColdDrink:     item.isColdDrink || false,
-        coldDrinkId:     item.coldDrinkId || null,
+        isColdDrink: item.isColdDrink || false,
+        coldDrinkId: item.coldDrinkId || null,
         coldDrinkSizeId: item.coldDrinkSizeId || null,
       };
     });
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount || 0, 0);
 
-    order.items         = processedItems;
-    order.subtotal      = subtotal;
-    order.tax           = tax;
-    order.total         = total;
+    order.items = processedItems;
+    order.subtotal = subtotal;
+    order.tax = tax;
+    order.total = total;
     order.estimatedTime = calculateTotalTime(processedItems);
 
-    if (notes       !== undefined) order.notes       = notes;
+    if (notes !== undefined) order.notes = notes;
     if (cashierNote !== undefined) order.cashierNote = cashierNote;
 
     order.updatedByWaiter = true;
@@ -467,7 +465,7 @@ exports.updateOrder = async (req, res) => {
     let statusReset = false;
 
     if (wasReadyOrDelivered) {
-      order.status        = 'preparing';
+      order.status = 'preparing';
       order.stockDeducted = false;
       statusReset = true;
     }
@@ -484,20 +482,20 @@ exports.updateOrder = async (req, res) => {
       const io = req.app.get('io');
       if (io) {
         io.to(`branch-${String(order.branchId)}`).emit('order-updated-by-waiter', {
-          orderId:         String(order._id),
-          orderNumber:     order.orderNumber,
-          orderType:       order.orderType,
-          tableNumber:     order.tableNumber || null,
-          floor:           order.floor || null,
-          status:          order.status,
+          orderId: String(order._id),
+          orderNumber: order.orderNumber,
+          orderType: order.orderType,
+          tableNumber: order.tableNumber || null,
+          floor: order.floor || null,
+          status: order.status,
           statusReset,
-          waiterName:      req.user.name || 'Waiter',
+          waiterName: req.user.name || 'Waiter',
           waiterUpdatedAt: order.waiterUpdatedAt,
-          total:           order.total,
-          itemCount:       order.items.length,
+          total: order.total,
+          itemCount: order.items.length,
           items: (populatedOrder.items || []).map(i => ({
-            name:     i.itemId?.name || i.name || 'Item',
-            size:     i.size || null,
+            name: i.itemId?.name || i.name || 'Item',
+            size: i.size || null,
             quantity: i.quantity,
           })),
           message: statusReset
@@ -557,7 +555,7 @@ exports.markDelivered = async (req, res) => {
     if (order.status !== 'ready')
       return res.status(400).json({ success: false, message: 'Sirf ready orders deliver ki ja sakti hain' });
 
-    order.status      = 'delivered';
+    order.status = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
@@ -595,27 +593,27 @@ exports.getOrderSlip = async (req, res) => {
     }
 
     const slipData = {
-      orderNumber:  order.orderNumber,
-      orderType:    order.orderType,
-      tableNumber:  order.tableNumber,
-      floor:        order.floor?.replace(/_/g, ' '),
-      cashierNote:  order.cashierNote,
+      orderNumber: order.orderNumber,
+      orderType: order.orderType,
+      tableNumber: order.tableNumber,
+      floor: order.floor?.replace(/_/g, ' '),
+      cashierNote: order.cashierNote,
       items: order.items.map(item => ({
-        name:     item.itemId?.name || item.name || 'Item',
-        size:     item.size,
+        name: item.itemId?.name || item.name || 'Item',
+        size: item.size,
         quantity: item.quantity,
-        price:    item.price,
+        price: item.price,
         subtotal: item.price * item.quantity,
       })),
-      subtotal:    order.subtotal || order.total,
-      discount:    order.discount || 0,
-      tax:         order.tax || 0,
-      total:       order.total,
-      waiter:      order.waiterId?.name || null,
+      subtotal: order.subtotal || order.total,
+      discount: order.discount || 0,
+      tax: order.tax || 0,
+      total: order.total,
+      waiter: order.waiterId?.name || null,
       deliveryBoy: order.deliveryBoyId?.name || null,
-      branchName:  BRANCH_NAME,
-      createdAt:   order.createdAt,
-      status:      order.status,
+      branchName: BRANCH_NAME,
+      createdAt: order.createdAt,
+      status: order.status,
     };
 
     res.json({ success: true, slipData });
@@ -666,39 +664,39 @@ exports.requestPrint = async (req, res) => {
     if (!order) return res.status(404).json({ success: false, message: 'Order nahi mili' });
 
     const slipData = {
-      orderNumber:     order.orderNumber,
-      orderType:       order.orderType,
-      tableNumber:     order.tableNumber || null,
-      floor:           order.floor || null,
-      customerName:    order.customerName || null,
-      customerPhone:   order.customerPhone || null,
+      orderNumber: order.orderNumber,
+      orderType: order.orderType,
+      tableNumber: order.tableNumber || null,
+      floor: order.floor || null,
+      customerName: order.customerName || null,
+      customerPhone: order.customerPhone || null,
       deliveryAddress: order.deliveryAddress || null,
-      deliveryBoy:     order.deliveryBoyId?.name || null,
-      waiter:          order.waiterId?.name || null,
-      cashierNote:     order.cashierNote || null,
+      deliveryBoy: order.deliveryBoyId?.name || null,
+      waiter: order.waiterId?.name || null,
+      cashierNote: order.cashierNote || null,
       items: (order.items || []).map(item => ({
-        name:     item.name || 'Item',
-        size:     item.size || null,
+        name: item.name || 'Item',
+        size: item.size || null,
         quantity: item.quantity,
-        price:    item.price,
+        price: item.price,
         subtotal: item.subtotal ?? item.price * item.quantity,
       })),
-      subtotal:       order.subtotal || order.total,
-      discount:       order.discount || 0,
-      tax:            order.tax || 0,
-      total:          order.total,
-      paymentMethod:  order.paymentMethod || null,
+      subtotal: order.subtotal || order.total,
+      discount: order.discount || 0,
+      tax: order.tax || 0,
+      total: order.total,
+      paymentMethod: order.paymentMethod || null,
       receivedAmount: order.receivedAmount || 0,
-      changeAmount:   order.changeAmount || 0,
-      createdAt:      order.createdAt,
-      paidAt:         order.paidAt || null,
+      changeAmount: order.changeAmount || 0,
+      createdAt: order.createdAt,
+      paidAt: order.paidAt || null,
     };
 
     try {
       const io = req.app.get('io');
       if (io)
         io.to(`branch-${String(order.branchId)}`).emit('print-order', {
-          orderId:     String(order._id),
+          orderId: String(order._id),
           orderNumber: order.orderNumber,
           slipData,
         });
