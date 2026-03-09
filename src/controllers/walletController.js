@@ -1,4 +1,5 @@
 const CustomerWallet = require('../models/Customerwallet');
+const Expense = require('../models/Expense'); // ✅ NEW: Expense model
 
 // ========== GET ALL CUSTOMERS (with wallet) ==========
 exports.getAllCustomers = async (req, res) => {
@@ -10,7 +11,7 @@ exports.getAllCustomers = async (req, res) => {
 
     if (search) {
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
+        { name:  { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
       ];
     }
@@ -47,29 +48,24 @@ exports.createCustomer = async (req, res) => {
   try {
     const { name, phone, email, address, notes, creditLimit } = req.body;
 
-    // Check duplicate phone in same branch
     const existing = await CustomerWallet.findOne({
       branchId: req.user.branchId,
       phone,
-      isActive: true
+      isActive: true,
     });
 
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: 'Is phone number ka customer pehle se exist karta hai'
+        message: 'Is phone number ka customer pehle se exist karta hai',
       });
     }
 
     const customer = await CustomerWallet.create({
       branchId: req.user.branchId,
-      name,
-      phone,
-      email,
-      address,
-      notes,
+      name, phone, email, address, notes,
       creditLimit: creditLimit || 5000,
-      balance: 0
+      balance: 0,
     });
 
     res.status(201).json({ success: true, customer, message: 'Customer wallet bana diya' });
@@ -99,7 +95,7 @@ exports.updateCustomer = async (req, res) => {
   }
 };
 
-// ========== ADVANCE PAYMENT (Customer pehle paise de) ==========
+// ========== ADVANCE PAYMENT ==========
 exports.addAdvancePayment = async (req, res) => {
   try {
     const { amount, description } = req.body;
@@ -122,7 +118,7 @@ exports.addAdvancePayment = async (req, res) => {
       description: description || 'Advance payment received',
       processedBy: req.user._id,
       balanceBefore,
-      balanceAfter: customer.balance
+      balanceAfter: customer.balance,
     });
 
     await customer.save();
@@ -131,14 +127,14 @@ exports.addAdvancePayment = async (req, res) => {
       success: true,
       customer,
       newBalance: customer.balance,
-      message: `Rs. ${amount} advance payment add ho gaya`
+      message: `Rs. ${amount} advance payment add ho gaya`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== CREDIT PURCHASE (Customer udhaar leta hai) ==========
+// ========== CREDIT PURCHASE ==========
 exports.creditPurchase = async (req, res) => {
   try {
     const { amount, orderId, description } = req.body;
@@ -152,19 +148,18 @@ exports.creditPurchase = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Customer not found' });
     }
 
-    // Check credit limit
     const currentDebt = customer.balance < 0 ? Math.abs(customer.balance) : 0;
     const newDebt = currentDebt + parseFloat(amount);
 
     if (newDebt > customer.creditLimit) {
       return res.status(400).json({
         success: false,
-        message: `Credit limit exceed ho jayegi. Limit: Rs. ${customer.creditLimit}, Current debt: Rs. ${currentDebt}, Requested: Rs. ${amount}`
+        message: `Credit limit exceed ho jayegi. Limit: Rs. ${customer.creditLimit}, Current debt: Rs. ${currentDebt}, Requested: Rs. ${amount}`,
       });
     }
 
     const balanceBefore = customer.balance;
-    customer.balance -= parseFloat(amount); // Minus karo kyunke udhaar hai
+    customer.balance -= parseFloat(amount);
 
     customer.transactions.push({
       type: 'credit_purchase',
@@ -173,7 +168,7 @@ exports.creditPurchase = async (req, res) => {
       orderId: orderId || null,
       processedBy: req.user._id,
       balanceBefore,
-      balanceAfter: customer.balance
+      balanceAfter: customer.balance,
     });
 
     await customer.save();
@@ -182,14 +177,14 @@ exports.creditPurchase = async (req, res) => {
       success: true,
       customer,
       newBalance: customer.balance,
-      message: `Rs. ${amount} credit purchase record ho gaya`
+      message: `Rs. ${amount} credit purchase record ho gaya`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== USE BALANCE FOR ORDER (Advance balance use karo) ==========
+// ========== USE BALANCE ==========
 exports.useBalance = async (req, res) => {
   try {
     const { amount, orderId, description } = req.body;
@@ -206,7 +201,7 @@ exports.useBalance = async (req, res) => {
     if (parseFloat(amount) > customer.balance) {
       return res.status(400).json({
         success: false,
-        message: `Sirf Rs. ${customer.balance} balance available hai`
+        message: `Sirf Rs. ${customer.balance} balance available hai`,
       });
     }
 
@@ -220,7 +215,7 @@ exports.useBalance = async (req, res) => {
       orderId: orderId || null,
       processedBy: req.user._id,
       balanceBefore,
-      balanceAfter: customer.balance
+      balanceAfter: customer.balance,
     });
 
     await customer.save();
@@ -229,14 +224,14 @@ exports.useBalance = async (req, res) => {
       success: true,
       customer,
       newBalance: customer.balance,
-      message: `Rs. ${amount} balance use ho gaya`
+      message: `Rs. ${amount} balance use ho gaya`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== CLEAR DEBT (Customer pehle ka udhaar deta hai) ==========
+// ========== CLEAR DEBT ==========
 exports.clearDebt = async (req, res) => {
   try {
     const { amount, description } = req.body;
@@ -260,7 +255,7 @@ exports.clearDebt = async (req, res) => {
       description: description || 'Debt cleared - payment received',
       processedBy: req.user._id,
       balanceBefore,
-      balanceAfter: customer.balance
+      balanceAfter: customer.balance,
     });
 
     await customer.save();
@@ -269,42 +264,216 @@ exports.clearDebt = async (req, res) => {
       success: true,
       customer,
       newBalance: customer.balance,
-      message: `Rs. ${payAmount} debt clear ho gaya`
+      message: `Rs. ${payAmount} debt clear ho gaya`,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ========== WALLET SUMMARY (Total debt / advance report) ==========
+// ========== WALLET SUMMARY ==========
 exports.getWalletSummary = async (req, res) => {
   try {
     const branchId = req.user.branchId;
 
-    const customers = await CustomerWallet.find({ branchId, isActive: true }).select('name phone balance creditLimit');
+    const customers = await CustomerWallet.find({ branchId, isActive: true })
+      .select('name phone balance creditLimit');
 
-    const totalAdvance = customers
-      .filter(c => c.balance > 0)
-      .reduce((sum, c) => sum + c.balance, 0);
+    const totalAdvance = customers.filter(c => c.balance > 0).reduce((sum, c) => sum + c.balance, 0);
+    const totalDebt    = customers.filter(c => c.balance < 0).reduce((sum, c) => sum + Math.abs(c.balance), 0);
 
-    const totalDebt = customers
-      .filter(c => c.balance < 0)
-      .reduce((sum, c) => sum + Math.abs(c.balance), 0);
-
-    const debtCustomers = customers.filter(c => c.balance < 0);
+    const debtCustomers    = customers.filter(c => c.balance < 0);
     const advanceCustomers = customers.filter(c => c.balance > 0);
 
     res.json({
       success: true,
       summary: {
-        totalCustomers: customers.length,
+        totalCustomers:   customers.length,
         totalAdvance,
         totalDebt,
-        debtCustomers: debtCustomers.length,
+        debtCustomers:    debtCustomers.length,
         advanceCustomers: advanceCustomers.length,
       },
-      debtors: debtCustomers.sort((a, b) => a.balance - b.balance), // Sabse zyada udhaar pehle
+      debtors: debtCustomers.sort((a, b) => a.balance - b.balance),
     });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ============================================================
+// ✅ EXPENSE SECTION (new additions below — wallet untouched)
+// ============================================================
+
+// ========== GET EXPENSES ==========
+exports.getExpenses = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { date, category, startDate, endDate } = req.query;
+
+    let query = { branchId };
+
+    // Single date filter
+    if (date) {
+      const start = new Date(date);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(date);
+      end.setHours(23, 59, 59, 999);
+      query.date = { $gte: start, $lte: end };
+    }
+
+    // Date range filter
+    if (!date && startDate && endDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.date = { $gte: start, $lte: end };
+    }
+
+    if (category) query.category = category;
+
+    const expenses = await Expense.find(query)
+      .populate('addedBy', 'name')
+      .sort({ date: -1, createdAt: -1 });
+
+    res.json({ success: true, expenses, count: expenses.length });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== CREATE EXPENSE ==========
+exports.createExpense = async (req, res) => {
+  try {
+    const { title, amount, category, paidTo, description, date } = req.body;
+
+    if (!title || !amount || parseFloat(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'Title aur valid amount zaroori hai' });
+    }
+
+    const expense = await Expense.create({
+      branchId:    req.user.branchId,
+      title,
+      amount:      parseFloat(amount),
+      category:    category || 'other',
+      paidTo:      paidTo   || '',
+      description: description || '',
+      date:        date ? new Date(date) : new Date(),
+      addedBy:     req.user._id,
+    });
+
+    const populated = await Expense.findById(expense._id).populate('addedBy', 'name');
+
+    res.status(201).json({ success: true, expense: populated, message: 'Expense add ho gaya' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== UPDATE EXPENSE ==========
+exports.updateExpense = async (req, res) => {
+  try {
+    const { title, amount, category, paidTo, description, date } = req.body;
+
+    const expense = await Expense.findOneAndUpdate(
+      { _id: req.params.id, branchId: req.user.branchId },
+      {
+        title,
+        amount:      parseFloat(amount),
+        category:    category || 'other',
+        paidTo:      paidTo   || '',
+        description: description || '',
+        date:        date ? new Date(date) : undefined,
+      },
+      { new: true }
+    ).populate('addedBy', 'name');
+
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+
+    res.json({ success: true, expense, message: 'Expense update ho gaya' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== DELETE EXPENSE ==========
+exports.deleteExpense = async (req, res) => {
+  try {
+    const expense = await Expense.findOneAndDelete({
+      _id:      req.params.id,
+      branchId: req.user.branchId,
+    });
+
+    if (!expense) {
+      return res.status(404).json({ success: false, message: 'Expense not found' });
+    }
+
+    res.json({ success: true, message: 'Expense delete ho gaya' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== EXPENSE SUMMARY ==========
+exports.getExpenseSummary = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+
+    const now       = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const allExpenses   = await Expense.find({ branchId });
+    const todayExpenses = allExpenses.filter(e => e.date >= todayStart && e.date <= todayEnd);
+    const monthExpenses = allExpenses.filter(e => e.date >= monthStart && e.date <= monthEnd);
+
+    // Category breakdown (all time)
+    const byCategory = {};
+    allExpenses.forEach(e => {
+      byCategory[e.category] = (byCategory[e.category] || 0) + e.amount;
+    });
+
+    res.json({
+      success:        true,
+      today:          todayExpenses.reduce((s, e) => s + e.amount, 0),
+      todayCount:     todayExpenses.length,
+      thisMonth:      monthExpenses.reduce((s, e) => s + e.amount, 0),
+      thisMonthCount: monthExpenses.length,
+      total:          allExpenses.reduce((s, e) => s + e.amount, 0),
+      byCategory,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== GET EXPENSES FOR DATE+TIME RANGE (used by cashier slip) ==========
+exports.getExpensesByDateTimeRange = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { startDateTime, endDateTime } = req.query;
+
+    let query = { branchId };
+
+    if (startDateTime && endDateTime) {
+      query.date = {
+        $gte: new Date(startDateTime),
+        $lte: new Date(endDateTime),
+      };
+    }
+
+    const expenses = await Expense.find(query)
+      .populate('addedBy', 'name')
+      .sort({ date: -1 });
+
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+
+    res.json({ success: true, expenses, total, count: expenses.length });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

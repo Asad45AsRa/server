@@ -12,8 +12,9 @@ const {
   getPaymentHistory,
   getPaymentSlip,
   getHourlyIncomeReport,
+  getCashierShiftReport,    // ✅ NEW
   updateOrderStatus,
-  createOrder,              // ✅ NEW
+  createOrder,
   createProduct,
   updateProduct,
   getProducts,
@@ -40,6 +41,13 @@ const {
   useBalance,
   clearDebt,
   getWalletSummary,
+  // ✅ NEW: Expense functions
+  getExpenses,
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  getExpenseSummary,
+  getExpensesByDateTimeRange,
 } = require('../controllers/walletController');
 
 const coldDrinkCtrl = require('../controllers/Colddrinkcontroller');
@@ -47,19 +55,14 @@ const coldDrinkCtrl = require('../controllers/Colddrinkcontroller');
 router.use(protect);
 router.use(checkRole(UserRole.CASHIER));
 
-// ===== ORDERS — SPECIFIC ROUTES FIRST (before /:id) =====
+// ===== ORDERS — SPECIFIC ROUTES FIRST =====
 router.get('/orders/pending',   getPendingOrders);
 router.get('/orders/completed', getCompletedOrders);
 
-// ✅ NEW: Create order from POS/cashier desktop
 router.post('/orders',                          createOrder);
-
-// Advance payment routes BEFORE /:id to avoid conflict
 router.post('/orders/:id/advance-payment',      receiveAdvancePayment);
 router.post('/orders/:id/complete-advance',     completeAdvancePaidOrder);
 router.put('/orders/:id/status',                updateOrderStatus);
-
-// Single order fetch (used by socket fallback + reprint)
 router.get('/orders/:id',                       getOrderById);
 
 // ===== PAYMENTS =====
@@ -68,7 +71,8 @@ router.get('/payments',         getPaymentHistory);
 router.get('/payment-slip/:id', getPaymentSlip);
 
 // ===== REPORTS =====
-router.get('/reports/hourly-income', getHourlyIncomeReport);
+router.get('/reports/hourly-income',  getHourlyIncomeReport);
+router.get('/reports/shift',          getCashierShiftReport);   // ✅ NEW: Cashier shift slip
 
 // ===== PRODUCTS =====
 router.post('/products',    createProduct);
@@ -100,5 +104,13 @@ router.post('/wallet/:id/advance',      addAdvancePayment);
 router.post('/wallet/:id/credit',       creditPurchase);
 router.post('/wallet/:id/use-balance',  useBalance);
 router.post('/wallet/:id/clear-debt',   clearDebt);
+
+// ===== EXPENSES ✅ NEW =====
+router.get('/expenses/summary',         getExpenseSummary);
+router.get('/expenses/range',           getExpensesByDateTimeRange);
+router.get('/expenses',                 getExpenses);
+router.post('/expenses',                createExpense);
+router.put('/expenses/:id',             updateExpense);
+router.delete('/expenses/:id',          deleteExpense);
 
 module.exports = router;

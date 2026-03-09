@@ -1,12 +1,13 @@
 // controllers/cashierController.js  — RELEVANT SECTIONS
 // Only the changed/added functions shown — rest of file stays the same
 
-const Order   = require('../models/Order');
-const Payment = require('../models/Payment');
-const Product = require('../models/Product');
-const Deal    = require('../models/Deal');
-const Table   = require('../models/Table');
+const Order    = require('../models/Order');
+const Payment  = require('../models/Payment');
+const Product  = require('../models/Product');
+const Deal     = require('../models/Deal');
+const Table    = require('../models/Table');
 const Inventory = require('../models/Inventory');
+const Expense  = require('../models/Expense'); // ✅ NEW
 const { PaymentStatus } = require('../config/constants');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
@@ -67,8 +68,6 @@ exports.deductInventoryForOrder = deductInventoryForOrder;
 
 // ========== ORDERS ==========
 
-// ✅ FIX: Added 'out_for_delivery' and 'returned' to the status filter
-// Previously orders disappeared when delivery boy set status to out_for_delivery or returned
 exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
@@ -81,9 +80,9 @@ exports.getPendingOrders = async (req, res) => {
           'accepted',
           'preparing',
           'ready',
-          'out_for_delivery',   // ✅ FIX: was missing — delivery orders disappeared!
+          'out_for_delivery',
           'delivered',
-          'returned',           // ✅ FIX: was missing — delivery boy return disappeared!
+          'returned',
         ],
       },
     })
@@ -100,18 +99,37 @@ exports.getPendingOrders = async (req, res) => {
   }
 };
 
+// ✅ UPDATED: getCompletedOrders now supports last24hours, date range, and date+time range
 exports.getCompletedOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, startDateTime, endDateTime, last24hours } = req.query;
 
     let query = { branchId, status: 'completed' };
 
-    if (startDate && endDate) {
+    if (last24hours === 'true') {
+      // Last 24 hours from now
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      query.completedAt = { $gte: since };
+    } else if (startDateTime && endDateTime) {
+      // Precise date+time range
+      query.completedAt = {
+        $gte: new Date(startDateTime),
+        $lte: new Date(endDateTime),
+      };
+    } else if (startDate && endDate) {
+      // Full day date range
       query.completedAt = {
         $gte: new Date(startDate),
         $lte: new Date(new Date(endDate).setHours(23, 59, 59)),
       };
+    } else if (startDate && !endDate) {
+      // Only start date — from that date onwards
+      query.completedAt = { $gte: new Date(startDate) };
+    } else {
+      // Default: last 24 hours if no filter provided
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      query.completedAt = { $gte: since };
     }
 
     const orders = await Order.find(query)
@@ -121,7 +139,7 @@ exports.getCompletedOrders = async (req, res) => {
       .populate('cashierId',     'name')
       .populate('items.itemId')
       .sort({ completedAt: -1 })
-      .limit(100);
+      .limit(500); // increased limit for date range queries
 
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
@@ -130,7 +148,7 @@ exports.getCompletedOrders = async (req, res) => {
   }
 };
 
-// ✅ NEW: Get single order by ID (used by cashier frontend for reprint / socket fallback)
+// ✅ NEW: Get single order by ID
 exports.getOrderById = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -142,7 +160,6 @@ exports.getOrderById = async (req, res) => {
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-    // Ensure same branch
     if (String(order.branchId) !== String(req.user.branchId)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
@@ -154,7 +171,7 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
-// ========== ✅ ADVANCE PAYMENT ==========
+// ========== ADVANCE PAYMENT ==========
 
 exports.receiveAdvancePayment = async (req, res) => {
   try {
@@ -175,9 +192,9 @@ exports.receiveAdvancePayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order already completed hai' });
     }
 
-    const prevAdvance = Number(order.advancePaid || 0);
-    const orderTotal  = Number(order.total || 0);
-    const newAdvance  = prevAdvance + Number(amount);
+    const prevAdvance   = Number(order.advancePaid || 0);
+    const orderTotal    = Number(order.total || 0);
+    const newAdvance    = prevAdvance + Number(amount);
     const cappedAdvance = Math.min(newAdvance, orderTotal);
 
     order.advancePaid          = cappedAdvance;
@@ -186,14 +203,14 @@ exports.receiveAdvancePayment = async (req, res) => {
     await order.save();
 
     await Payment.create({
-      orderId:       order._id,
-      branchId:      req.user.branchId,
-      amount:        Number(amount),
+      orderId:        order._id,
+      branchId:       req.user.branchId,
+      amount:         Number(amount),
       method,
-      status:        'partial',
-      cashierId:     req.user._id,
-      waiterId:      order.waiterId,
-      deliveryBoyId: order.deliveryBoyId,
+      status:         'partial',
+      cashierId:      req.user._id,
+      waiterId:       order.waiterId,
+      deliveryBoyId:  order.deliveryBoyId,
       receivedAmount: Number(amount),
       changeAmount:   0,
       transactionId:  transactionId || '',
@@ -219,7 +236,7 @@ exports.receiveAdvancePayment = async (req, res) => {
   }
 };
 
-// ========== ✅ COMPLETE ADVANCE-PAID ORDER ==========
+// ========== COMPLETE ADVANCE-PAID ORDER ==========
 
 exports.completeAdvancePaidOrder = async (req, res) => {
   try {
@@ -237,20 +254,20 @@ exports.completeAdvancePaidOrder = async (req, res) => {
 
     if (advance < total) {
       return res.status(400).json({
-        success: false,
+        success:  false,
         message: `Order fully paid nahi hai. Remaining: Rs.${(total - advance).toLocaleString()}`,
       });
     }
 
     const payment = await Payment.create({
-      orderId:       order._id,
-      branchId:      req.user.branchId,
-      amount:        total,
-      method:        order.advancePaymentMethod || 'cash',
-      status:        PaymentStatus.PAID,
-      cashierId:     req.user._id,
-      waiterId:      order.waiterId,
-      deliveryBoyId: order.deliveryBoyId,
+      orderId:        order._id,
+      branchId:       req.user.branchId,
+      amount:         total,
+      method:         order.advancePaymentMethod || 'cash',
+      status:         PaymentStatus.PAID,
+      cashierId:      req.user._id,
+      waiterId:       order.waiterId,
+      deliveryBoyId:  order.deliveryBoyId,
       receivedAmount: advance,
       changeAmount:   Math.max(0, advance - total),
       notes:          'Advance paid — order completed',
@@ -356,16 +373,16 @@ exports.receivePayment = async (req, res) => {
 // ========== PAYMENT SLIP ==========
 
 const buildSlipData = (order, payment) => ({
-  orderNumber:      order.orderNumber,
-  orderType:        order.orderType,
-  tableNumber:      order.tableNumber,
-  customerName:     order.customerName    || null,
-  customerPhone:    order.customerPhone   || null,
-  deliveryAddress:  order.deliveryAddress || null,
-  deliveryBoy:      payment.deliveryBoyId?.name || null,
-  distanceTravelled:order.distanceTravelled || null,
-  startMeterReading:order.startMeterReading || null,
-  endMeterReading:  order.endMeterReading   || null,
+  orderNumber:       order.orderNumber,
+  orderType:         order.orderType,
+  tableNumber:       order.tableNumber,
+  customerName:      order.customerName    || null,
+  customerPhone:     order.customerPhone   || null,
+  deliveryAddress:   order.deliveryAddress || null,
+  deliveryBoy:       payment.deliveryBoyId?.name || null,
+  distanceTravelled: order.distanceTravelled || null,
+  startMeterReading: order.startMeterReading || null,
+  endMeterReading:   order.endMeterReading   || null,
   items: order.items.map(item => ({
     name:     item.itemId?.name || item.name || 'Item',
     size:     item.size,
@@ -389,8 +406,8 @@ const buildSlipData = (order, payment) => ({
 exports.getPaymentSlip = async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.id)
-      .populate('cashierId', 'name')
-      .populate('waiterId',  'name')
+      .populate('cashierId',     'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .populate({
         path: 'orderId',
@@ -446,13 +463,11 @@ exports.getPaymentHistory = async (req, res) => {
 exports.getHourlyIncomeReport = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { date } = req.query;
+    const { date }  = req.query;
 
     const reportDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(reportDate);
-    startOfDay.setHours(0,  0,  0, 0);
-    const endOfDay = new Date(reportDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    const startOfDay = new Date(reportDate); startOfDay.setHours(0,  0,  0,   0);
+    const endOfDay   = new Date(reportDate); endOfDay.setHours(23, 59, 59, 999);
 
     const payments = await Payment.find({
       branchId,
@@ -473,9 +488,9 @@ exports.getHourlyIncomeReport = async (req, res) => {
       const hour = new Date(payment.paidAt).getHours();
       hourlyData[hour].totalAmount += payment.amount;
       hourlyData[hour].orderCount  += 1;
-      if (payment.method === 'cash')   hourlyData[hour].cash   += payment.amount;
-      else if (payment.method === 'card')  hourlyData[hour].card   += payment.amount;
-      else if (payment.method === 'online')hourlyData[hour].online += payment.amount;
+      if      (payment.method === 'cash')   hourlyData[hour].cash   += payment.amount;
+      else if (payment.method === 'card')   hourlyData[hour].card   += payment.amount;
+      else if (payment.method === 'online') hourlyData[hour].online += payment.amount;
     });
 
     const hourlyArray = Object.values(hourlyData).filter(h => h.totalAmount > 0 || h.orderCount > 0);
@@ -493,6 +508,73 @@ exports.getHourlyIncomeReport = async (req, res) => {
     res.json({ success: true, date: reportDate.toISOString().split('T')[0], hourlyData: hourlyArray, summary });
   } catch (error) {
     console.error('Hourly income report error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ========== ✅ NEW: CASHIER SHIFT SLIP REPORT ==========
+// Returns all payments + expenses for a given date+time range
+// Frontend (Electron) uses this to build the POS-58 cashier slip
+exports.getCashierShiftReport = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { startDateTime, endDateTime } = req.query;
+
+    if (!startDateTime || !endDateTime) {
+      return res.status(400).json({ success: false, message: 'startDateTime aur endDateTime zaroori hain' });
+    }
+
+    const start = new Date(startDateTime);
+    const end   = new Date(endDateTime);
+
+    // ── Payments in range ──
+    const payments = await Payment.find({
+      branchId,
+      paidAt: { $gte: start, $lte: end },
+      status: { $ne: 'advance' },
+    })
+      .populate('cashierId', 'name')
+      .populate('orderId',   'orderNumber orderType');
+
+    // ── Expenses in range ──
+    const expenses = await Expense.find({
+      branchId,
+      date: { $gte: start, $lte: end },
+    }).populate('addedBy', 'name');
+
+    // ── Summary calculations ──
+    const totalRevenue  = payments.reduce((s, p) => s + p.amount, 0);
+    const cashReceived  = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
+    const cardReceived  = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
+    const onlineReceived = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
+    const jazzReceived  = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
+    const easyReceived  = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
+
+    const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+    const netAmount     = totalRevenue - totalExpenses;
+
+    res.json({
+      success: true,
+      period: {
+        start: start.toISOString(),
+        end:   end.toISOString(),
+      },
+      payments,
+      expenses,
+      summary: {
+        totalOrders:    payments.length,
+        totalRevenue,
+        cashReceived,
+        cardReceived,
+        onlineReceived,
+        jazzReceived,
+        easyReceived,
+        totalExpenses,
+        netAmount,
+      },
+    });
+  } catch (error) {
+    console.error('Cashier shift report error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -579,7 +661,8 @@ exports.createDeal = async (req, res) => {
       return cleaned;
     });
     const deal = await Deal.create({ ...rest, products: cleanedProducts, branchId: req.user.branchId, createdBy: req.user._id });
-    const populatedDeal = await Deal.findById(deal._id).populate('branchId','name').populate('createdBy','name').populate('products.productId','name image');
+    const populatedDeal = await Deal.findById(deal._id)
+      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image');
     res.status(201).json({ success: true, deal: populatedDeal, message: 'Deal created successfully' });
   } catch (error) {
     console.error('Create deal error:', error);
@@ -609,7 +692,8 @@ exports.updateDeal = async (req, res) => {
 exports.getDeals = async (req, res) => {
   try {
     const deals = await Deal.find({ branchId: req.user.branchId })
-      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image').sort({ createdAt: -1 });
+      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image')
+      .sort({ createdAt: -1 });
     res.json({ success: true, deals, count: deals.length });
   } catch (error) {
     console.error('Get deals error:', error);
@@ -622,7 +706,7 @@ exports.getDeals = async (req, res) => {
 exports.getTables = async (req, res) => {
   try {
     const tables = await Table.find({ branchId: req.user.branchId })
-      .populate({ path:'currentOrderId', select:'orderNumber total status items', populate:{ path:'waiterId', select:'name' } })
+      .populate({ path: 'currentOrderId', select: 'orderNumber total status items', populate: { path: 'waiterId', select: 'name' } })
       .sort({ tableNumber: 1 });
     res.json({ success: true, tables, count: tables.length });
   } catch (error) {
@@ -698,16 +782,8 @@ exports.getColdDrinks = async (req, res) => {
 exports.createOrder = async (req, res) => {
   try {
     const {
-      orderType,
-      tableNumber,
-      floor,
-      customerName,
-      customerPhone,
-      deliveryAddress,
-      cashierNote,
-      notes,
-      discount = 0,
-      items = [],
+      orderType, tableNumber, floor, customerName, customerPhone,
+      deliveryAddress, cashierNote, notes, discount = 0, items = [],
     } = req.body;
 
     if (!items || items.length === 0) {
@@ -715,8 +791,6 @@ exports.createOrder = async (req, res) => {
     }
 
     const branchId = req.user.branchId;
-
-    // ── Build items with price validation ──
     let subtotal = 0;
     const processedItems = [];
 
@@ -729,8 +803,8 @@ exports.createOrder = async (req, res) => {
 
       processedItems.push({
         itemId:          item.itemId,
-        itemType:        item.itemType || 'Product',   // 'Product' | 'Deal' | 'Inventory'
-        type:            item.type     || 'product',   // 'product' | 'deal' | 'cold_drink'
+        itemType:        item.itemType || 'Product',
+        type:            item.type     || 'product',
         name:            item.name     || 'Item',
         size:            item.size     || null,
         quantity:        Number(item.quantity) || 1,
@@ -746,15 +820,13 @@ exports.createOrder = async (req, res) => {
     const discountAmt = Math.min(Number(discount) || 0, subtotal);
     const total       = subtotal - discountAmt;
 
-    // ── Generate order number ──
     const today     = new Date();
     const dateStr   = today.toISOString().slice(0, 10).replace(/-/g, '');
     const count     = await Order.countDocuments({ branchId, createdAt: { $gte: new Date(today.setHours(0,0,0,0)) } });
     const orderNumber = `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
 
     const order = await Order.create({
-      orderNumber,
-      branchId,
+      orderNumber, branchId,
       orderType:       orderType    || 'dine_in',
       tableNumber:     tableNumber  || null,
       floor:           floor        || null,
@@ -764,15 +836,11 @@ exports.createOrder = async (req, res) => {
       cashierNote:     cashierNote  || '',
       notes:           notes        || '',
       items:           processedItems,
-      subtotal,
-      discount:        discountAmt,
-      total,
-      tax:             0,
-      status:          'pending',
-      cashierId:       req.user._id,
+      subtotal, discount: discountAmt, total, tax: 0,
+      status:    'pending',
+      cashierId: req.user._id,
     });
 
-    // ── Mark table as occupied ──
     if (orderType === 'dine_in' && tableNumber && floor) {
       await Table.findOneAndUpdate(
         { branchId, tableNumber, floor },
@@ -786,7 +854,6 @@ exports.createOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
-    // ── Emit socket event so kitchen gets notified ──
     const io = req.app.get('io');
     if (io) {
       io.to(String(branchId)).emit('new-order', {
