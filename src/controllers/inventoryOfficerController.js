@@ -1,6 +1,6 @@
 const { InventoryTransaction, InventoryRequest, Supplier, SupplierPayment } = require('../models/InventoryOfficer');
-const Inventory     = require('../models/Inventory');
-const User          = require('../models/User');
+const Inventory = require('../models/Inventory');
+const User = require('../models/User');
 const { getMonthDateRange } = require('../utils/dateHelpers');
 const ChefInventory = require('../models/Chefinventory');
 const InventoryReturnRequest = require('../models/InventoryReturnRequest');
@@ -75,7 +75,7 @@ exports.getPurchaseHistory = async (req, res) => {
     const { startDate, endDate, itemId, supplier } = req.query;
     let query = { type: 'purchase' };
     if (startDate && endDate) query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
-    if (itemId)   query.itemId   = itemId;
+    if (itemId) query.itemId = itemId;
     if (supplier) query.supplier = supplier;
 
     const purchases = await InventoryTransaction.find(query)
@@ -83,9 +83,9 @@ exports.getPurchaseHistory = async (req, res) => {
       .populate('receivedBy', 'name')
       .sort({ date: -1 });
 
-    const totalCost    = purchases.reduce((sum, p) => sum + (p.totalCost    || 0), 0);
+    const totalCost = purchases.reduce((sum, p) => sum + (p.totalCost || 0), 0);
     const totalAdvance = purchases.reduce((sum, p) => sum + (p.advanceAmount || 0), 0);
-    const totalCredit  = purchases.reduce((sum, p) => sum + (p.creditAmount  || 0), 0);
+    const totalCredit = purchases.reduce((sum, p) => sum + (p.creditAmount || 0), 0);
 
     res.json({
       success: true, purchases,
@@ -118,14 +118,14 @@ exports.issueInventory = async (req, res) => {
       totalCost: issueCost, issuedTo, receivedBy: req.user._id, notes, date: new Date()
     });
 
-    item.currentStock    -= quantity;
+    item.currentStock -= quantity;
     item.totalIssueValue += issueCost;
     item.stockHistory.push({ date: new Date(), quantity, type: 'out', transactionId: transaction._id });
     await item.save();
 
     // ── Chef ki aaj ki ChefInventory bhi update karo ──────────────────────
     if (issuedTo) {
-      const today    = new Date(); today.setHours(0, 0, 0, 0);
+      const today = new Date(); today.setHours(0, 0, 0, 0);
       const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
       let chefRecord = await ChefInventory.findOne({
@@ -141,7 +141,7 @@ exports.issueInventory = async (req, res) => {
       if (chefRecord) {
         const existing = chefRecord.items.find(i => i.inventoryItemId.toString() === itemId.toString());
         if (existing) { existing.issuedQuantity += quantity; }
-        else          { chefRecord.items.push(issuedItemData); }
+        else { chefRecord.items.push(issuedItemData); }
         await chefRecord.save();
       } else {
         await ChefInventory.create({
@@ -162,12 +162,12 @@ exports.getIssueHistory = async (req, res) => {
     const { startDate, endDate, itemId, issuedTo } = req.query;
     let query = { type: 'issue' };
     if (startDate && endDate) query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
-    if (itemId)   query.itemId   = itemId;
+    if (itemId) query.itemId = itemId;
     if (issuedTo) query.issuedTo = issuedTo;
 
     const issues = await InventoryTransaction.find(query)
-      .populate('itemId',     'name unit')
-      .populate('issuedTo',   'name role')
+      .populate('itemId', 'name unit')
+      .populate('issuedTo', 'name role')
       .populate('receivedBy', 'name')
       .sort({ date: -1 });
 
@@ -197,7 +197,7 @@ exports.issueInventoryToChef = async (req, res) => {
         return res.status(404).json({ success: false, message: `Item ${item.inventoryItemId} not found` });
 
       // ✅ FIX: Always parse as float — request body can send strings
-      const qtyToIssue   = parseFloat(item.issuedQuantity) || 0;
+      const qtyToIssue = parseFloat(item.issuedQuantity) || 0;
       const currentStock = parseFloat(invItem.currentStock) || 0;
 
       if (qtyToIssue <= 0)
@@ -209,37 +209,37 @@ exports.issueInventoryToChef = async (req, res) => {
           message: `Insufficient stock for ${invItem.name}. Available: ${currentStock} ${invItem.unit}, Requested: ${qtyToIssue} ${invItem.unit}`
         });
 
-      const unitCost  = parseFloat(invItem.averageCost || invItem.pricePerUnit) || 0;
+      const unitCost = parseFloat(invItem.averageCost || invItem.pricePerUnit) || 0;
       const totalCost = qtyToIssue * unitCost;
 
-      invItem.currentStock    = currentStock - qtyToIssue;
+      invItem.currentStock = currentStock - qtyToIssue;
       invItem.totalIssueValue = (parseFloat(invItem.totalIssueValue) || 0) + totalCost;
       invItem.stockHistory.push({ date: new Date(), quantity: qtyToIssue, type: 'out' });
       await invItem.save();
 
       await InventoryTransaction.create({
-        itemId:      item.inventoryItemId,
-        type:        'issue',
-        quantity:    qtyToIssue,
-        unit:        invItem.unit,
+        itemId: item.inventoryItemId,
+        type: 'issue',
+        quantity: qtyToIssue,
+        unit: invItem.unit,
         pricePerUnit: unitCost,
         totalCost,
-        issuedTo:    chefId,
-        receivedBy:  req.user._id,
-        notes:       notes || 'Daily issue to chef',
-        date:        new Date()
+        issuedTo: chefId,
+        receivedBy: req.user._id,
+        notes: notes || 'Daily issue to chef',
+        date: new Date()
       });
 
       issuedItems.push({
         inventoryItemId: item.inventoryItemId,
-        name:            invItem.name,
-        unit:            invItem.unit,
-        issuedQuantity:  qtyToIssue
+        name: invItem.name,
+        unit: invItem.unit,
+        issuedQuantity: qtyToIssue
       });
     }
 
     // Create or update today's ChefInventory record
-    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
     let chefRecord = await ChefInventory.findOne({
@@ -262,7 +262,7 @@ exports.issueInventoryToChef = async (req, res) => {
       chefRecord = await ChefInventory.create({
         chefId,
         branchId: req.user.branchId,
-        items:    issuedItems.map(i => ({ ...i, usedQuantity: 0, returnedQuantity: 0 })),
+        items: issuedItems.map(i => ({ ...i, usedQuantity: 0, returnedQuantity: 0 })),
         issuedBy: req.user._id,
         notes
       });
@@ -300,7 +300,7 @@ exports.receiveChefReturn = async (req, res) => {
       if (!recordItem) continue;
 
       const maxReturn = recordItem.issuedQuantity - recordItem.returnedQuantity;
-      const toReturn  = Math.min(parseFloat(ret.returnedQuantity) || 0, maxReturn);
+      const toReturn = Math.min(parseFloat(ret.returnedQuantity) || 0, maxReturn);
       if (toReturn <= 0) continue;
 
       const invItem = await Inventory.findById(ret.inventoryItemId);
@@ -363,17 +363,17 @@ exports.getChefInventoryRecords = async (req, res) => {
   try {
     const { chefId, status, date } = req.query;
     const query = { branchId: req.user.branchId };
-    if (chefId)  query.chefId = chefId;
-    if (status)  query.status = status;
+    if (chefId) query.chefId = chefId;
+    if (status) query.status = status;
     if (date) {
-      const d    = new Date(date); d.setHours(0, 0, 0, 0);
-      const next = new Date(d);   next.setDate(next.getDate() + 1);
+      const d = new Date(date); d.setHours(0, 0, 0, 0);
+      const next = new Date(d); next.setDate(next.getDate() + 1);
       query.date = { $gte: d, $lt: next };
     }
 
     const records = await ChefInventory.find(query)
-      .populate('chefId',              'name')
-      .populate('issuedBy',            'name')
+      .populate('chefId', 'name')
+      .populate('issuedBy', 'name')
       .populate('items.inventoryItemId', 'name unit')
       .sort({ date: -1 });
 
@@ -401,7 +401,7 @@ exports.getTotalStock = async (req, res) => {
       _id: item._id, name: item.name, category: item.category, type: 'inventory',
       currentStock: item.currentStock, minimumStock: item.minimumStock, unit: item.unit,
       averageCost: item.averageCost || item.pricePerUnit || 0,
-      stockValue:  item.currentStock * (item.averageCost || item.pricePerUnit || 0),
+      stockValue: item.currentStock * (item.averageCost || item.pricePerUnit || 0),
       isLow: item.currentStock > 0 && item.currentStock <= item.minimumStock,
       isOut: item.currentStock === 0,
     }));
@@ -422,9 +422,9 @@ exports.getTotalStock = async (req, res) => {
       }
     }
 
-    const allStock        = [...inventoryStock, ...coldDrinkStock];
-    const totalValue      = allStock.reduce((s, i) => s + (i.stockValue || 0), 0);
-    const lowStockCount   = allStock.filter(i => i.isLow).length;
+    const allStock = [...inventoryStock, ...coldDrinkStock];
+    const totalValue = allStock.reduce((s, i) => s + (i.stockValue || 0), 0);
+    const lowStockCount = allStock.filter(i => i.isLow).length;
     const outOfStockCount = allStock.filter(i => i.isOut).length;
 
     res.json({
@@ -465,8 +465,8 @@ exports.getAllRequests = async (req, res) => {
 
     const requests = await InventoryRequest.find(query)
       .populate('requestedBy', 'name role')
-      .populate('approvedBy',  'name')
-      .populate('issuedBy',    'name')
+      .populate('approvedBy', 'name')
+      .populate('issuedBy', 'name')
       .populate('items.inventoryItemId', 'name unit currentStock')
       .sort({ requestDate: -1 });
 
@@ -543,14 +543,14 @@ exports.issueApprovedRequest = async (req, res) => {
         quantity: qtyToIssue, unit: invItem.unit,
         pricePerUnit: invItem.averageCost || invItem.pricePerUnit || 0,
         totalCost: issueCost,
-        issuedTo:   request.requestedBy._id,
+        issuedTo: request.requestedBy._id,
         receivedBy: req.user._id,
-        notes:  `Issued against request ID: ${request._id}`,
-        date:   new Date()
+        notes: `Issued against request ID: ${request._id}`,
+        date: new Date()
       });
 
-      invItem.currentStock     -= qtyToIssue;
-      invItem.totalIssueValue   = (invItem.totalIssueValue || 0) + issueCost;
+      invItem.currentStock -= qtyToIssue;
+      invItem.totalIssueValue = (invItem.totalIssueValue || 0) + issueCost;
       invItem.stockHistory.push({ date: new Date(), quantity: qtyToIssue, type: 'out', transactionId: transaction._id });
       await invItem.save();
 
@@ -559,20 +559,20 @@ exports.issueApprovedRequest = async (req, res) => {
       // ✅ ChefInventory ke liye list tayyar karo
       issuedItemsForChef.push({
         inventoryItemId: invItem._id,
-        name:            invItem.name,
-        unit:            invItem.unit,
-        issuedQuantity:  qtyToIssue,
-        usedQuantity:    0,
+        name: invItem.name,
+        unit: invItem.unit,
+        issuedQuantity: qtyToIssue,
+        usedQuantity: 0,
         returnedQuantity: 0,
       });
     }
 
     // ✅ Chef ki aaj ki ChefInventory create/update karo
     // Taake chef mobile app mein dekh sake
-    const chefId   = request.requestedBy._id;
+    const chefId = request.requestedBy._id;
     const branchId = request.requestedBy.branchId || req.user.branchId;
 
-    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
     let chefRecord = await ChefInventory.findOne({
@@ -587,23 +587,23 @@ exports.issueApprovedRequest = async (req, res) => {
           i => i.inventoryItemId.toString() === newItem.inventoryItemId.toString()
         );
         if (existing) { existing.issuedQuantity += newItem.issuedQuantity; }
-        else          { chefRecord.items.push(newItem); }
+        else { chefRecord.items.push(newItem); }
       }
       await chefRecord.save();
     } else {
       // Naya record banao
       chefRecord = await ChefInventory.create({
         chefId, branchId,
-        items:    issuedItemsForChef,
+        items: issuedItemsForChef,
         issuedBy: req.user._id,
-        notes:    `Issued via request ${request._id}`,
-        status:   'active',
+        notes: `Issued via request ${request._id}`,
+        status: 'active',
       });
     }
 
     // Request ko issued mark karo
-    request.status     = 'issued';
-    request.issuedBy   = req.user._id;
+    request.status = 'issued';
+    request.issuedBy = req.user._id;
     request.issuedDate = new Date();
     await request.save();
 
@@ -657,16 +657,16 @@ exports.getSupplierDetail = async (req, res) => {
     const payments = await SupplierPayment.find({ supplierId: req.params.id })
       .populate('recordedBy', 'name').sort({ date: -1 });
 
-    const totalCreditPayments  = payments.filter(p => p.paymentType === 'credit_payment').reduce((s, p) => s + p.amount, 0);
+    const totalCreditPayments = payments.filter(p => p.paymentType === 'credit_payment').reduce((s, p) => s + p.amount, 0);
     const totalAdvancePayments = payments.filter(p => p.paymentType === 'advance_payment').reduce((s, p) => s + p.amount, 0);
-    const totalAdvanceRefunds  = payments.filter(p => p.paymentType === 'advance_refund').reduce((s, p) => s + p.amount, 0);
+    const totalAdvanceRefunds = payments.filter(p => p.paymentType === 'advance_refund').reduce((s, p) => s + p.amount, 0);
 
     res.json({
       success: true, supplier, payments,
       summary: {
-        currentCredit:      supplier.currentCredit,
-        totalAdvancePaid:   supplier.totalAdvancePaid,
-        netBalance:         supplier.currentCredit - supplier.totalAdvancePaid,
+        currentCredit: supplier.currentCredit,
+        totalAdvancePaid: supplier.totalAdvancePaid,
+        netBalance: supplier.currentCredit - supplier.totalAdvancePaid,
         totalCreditPayments, totalAdvancePayments, totalAdvanceRefunds,
         totalPurchaseValue: supplier.totalPurchaseValue || 0
       }
@@ -686,14 +686,14 @@ exports.recordSupplierPayment = async (req, res) => {
     if (parsedAmount <= 0)
       return res.status(400).json({ success: false, message: 'Amount must be positive' });
 
-    const creditBefore  = supplier.currentCredit;
+    const creditBefore = supplier.currentCredit;
     const advanceBefore = supplier.totalAdvancePaid;
 
     if (paymentType === 'credit_payment') {
       if (parsedAmount > supplier.currentCredit)
         return res.status(400).json({ success: false, message: `Cannot pay more than outstanding credit (${supplier.currentCredit})` });
-      supplier.currentCredit       -= parsedAmount;
-      supplier.totalCreditCleared   = (supplier.totalCreditCleared || 0) + parsedAmount;
+      supplier.currentCredit -= parsedAmount;
+      supplier.totalCreditCleared = (supplier.totalCreditCleared || 0) + parsedAmount;
     } else if (paymentType === 'advance_payment') {
       supplier.totalAdvancePaid += parsedAmount;
     } else if (paymentType === 'advance_refund') {
@@ -709,8 +709,8 @@ exports.recordSupplierPayment = async (req, res) => {
     const payment = await SupplierPayment.create({
       supplierId, supplierName: supplier.name, paymentType,
       amount: parsedAmount, notes, recordedBy: req.user._id,
-      creditBeforePayment:  creditBefore,  advanceBeforePayment: advanceBefore,
-      creditAfterPayment:   supplier.currentCredit, advanceAfterPayment: supplier.totalAdvancePaid
+      creditBeforePayment: creditBefore, advanceBeforePayment: advanceBefore,
+      creditAfterPayment: supplier.currentCredit, advanceAfterPayment: supplier.totalAdvancePaid
     });
 
     res.status(201).json({ success: true, payment, supplier, message: 'Payment recorded successfully' });
@@ -735,45 +735,149 @@ exports.getSupplierPayments = async (req, res) => {
 
 exports.getInventoryReport = async (req, res) => {
   try {
-    const { month, year } = req.query;
+    const { startDate: startStr, endDate: endStr, month, year } = req.query;
     const branchId = req.user.branchId;
-    const { startDate, endDate } = getMonthDateRange(month, year);
 
-    const purchases = await InventoryTransaction.find({ type: 'purchase', date: { $gte: startDate, $lte: endDate } });
-    const totalPurchaseCost = purchases.reduce((sum, p) => sum + (p.totalCost || 0), 0);
+    // ── Resolve date range ────────────────────────────────────────────────
+    let startDate, endDate;
 
-    const issues = await InventoryTransaction.find({ type: 'issue', date: { $gte: startDate, $lte: endDate } });
-    const totalIssueCost = issues.reduce((sum, i) => sum + (i.totalCost || 0), 0);
+    if (startStr && endStr) {
+      // New: explicit date range (from Reports.jsx)
+      startDate = new Date(startStr);
+      startDate.setHours(0, 0, 0, 0);
+      endDate = new Date(endStr);
+      endDate.setHours(23, 59, 59, 999);
+    } else {
+      // Fallback: old month/year params
+      const range = getMonthDateRange(month, year);
+      startDate = range.startDate;
+      endDate = range.endDate;
+    }
 
-    const inventory = await Inventory.find({ branchId });
+    // ── Purchases ─────────────────────────────────────────────────────────
+    const purchases = await InventoryTransaction.find({
+      type: 'purchase',
+      date: { $gte: startDate, $lte: endDate },
+    });
+
+    const totalPurchaseCost = purchases.reduce((s, p) => s + (p.totalCost || 0), 0);
+    const cashPayments = purchases.filter(p => p.paymentType === 'cash')
+      .reduce((s, p) => s + (p.totalCost || 0), 0);
+    const creditPayments = purchases.filter(p => p.paymentType === 'credit')
+      .reduce((s, p) => s + (p.creditAmount || 0), 0);
+    const advancePayments = purchases.filter(p => p.paymentType === 'advance')
+      .reduce((s, p) => s + (p.advanceAmount || 0), 0);
+
+    // ── Issues ────────────────────────────────────────────────────────────
+    const issues = await InventoryTransaction.find({
+      type: 'issue',
+      date: { $gte: startDate, $lte: endDate },
+    });
+    const totalIssueCost = issues.reduce((s, i) => s + (i.totalCost || 0), 0);
+
+    // ── Current Stock ─────────────────────────────────────────────────────
+    const inventory = await Inventory.find({ branchId, isActive: true });
     const currentStockValue = inventory.reduce(
-      (sum, item) => sum + (item.currentStock * (item.averageCost || item.pricePerUnit)), 0
+      (s, item) => s + (item.currentStock * (item.averageCost || item.pricePerUnit || 0)),
+      0
     );
+    const lowStockItems = inventory.filter(i => i.currentStock <= i.minimumStock);
 
-    const lowStockItems  = inventory.filter(i => i.currentStock <= i.minimumStock);
-    const cashPayments   = purchases.filter(p => p.paymentType === 'cash').reduce((s, p) => s + (p.totalCost   || 0), 0);
-    const creditPayments = purchases.filter(p => p.paymentType === 'credit').reduce((s, p) => s + (p.creditAmount || 0), 0);
-    const advancePayments= purchases.filter(p => p.paymentType === 'advance').reduce((s, p) => s + (p.advanceAmount|| 0), 0);
+    // ── Chef Usage (new section) ──────────────────────────────────────────
+    // Query all ChefInventory records in the date range for this branch
+    const chefRecords = await ChefInventory.find({
+      branchId,
+      date: { $gte: startDate, $lte: endDate },
+    })
+      .populate('chefId', 'name')
+      .populate('items.inventoryItemId', 'name unit');
 
+    // Aggregate: group by chef → group by item
+    const chefUsageMap = {};
+
+    for (const record of chefRecords) {
+      const chefName = record.chefId?.name || 'Unknown Chef';
+
+      if (!chefUsageMap[chefName]) {
+        chefUsageMap[chefName] = { chefName, itemsMap: {} };
+      }
+
+      for (const item of record.items) {
+        const itemName = item.inventoryItemId?.name || item.name || 'Unknown Item';
+        const unit = item.inventoryItemId?.unit || item.unit || '';
+
+        if (!chefUsageMap[chefName].itemsMap[itemName]) {
+          chefUsageMap[chefName].itemsMap[itemName] = {
+            name: itemName, unit,
+            issued: 0,
+            used: 0,
+            returned: 0,
+          };
+        }
+
+        const ci = chefUsageMap[chefName].itemsMap[itemName];
+        ci.issued += parseFloat(item.issuedQuantity || 0);
+        ci.used += parseFloat(item.usedQuantity || 0);
+        ci.returned += parseFloat(item.returnedQuantity || 0);
+      }
+    }
+
+    // Convert map → array and compute usage %
+    const chefUsage = Object.values(chefUsageMap).map(chef => ({
+      chefName: chef.chefName,
+      items: Object.values(chef.itemsMap).map(item => ({
+        name: item.name,
+        unit: item.unit,
+        issued: parseFloat(item.issued.toFixed(2)),
+        used: parseFloat(item.used.toFixed(2)),
+        returned: parseFloat(item.returned.toFixed(2)),
+        usagePercent: item.issued > 0
+          ? Math.round((item.used / item.issued) * 100)
+          : 0,
+      })),
+    }));
+
+    // ── Response ──────────────────────────────────────────────────────────
     res.json({
       success: true,
       report: {
-        period: { month, year, startDate, endDate },
-        purchases: { total: purchases.length, totalCost: totalPurchaseCost, cashPayments, creditPayments, advancePayments },
-        issues: { total: issues.length, totalCost: totalIssueCost },
+        period: { startDate, endDate },
+
+        purchases: {
+          total: purchases.length,
+          totalCost: totalPurchaseCost,
+          cashPayments,
+          creditPayments,
+          advancePayments,
+        },
+
+        issues: {
+          total: issues.length,
+          totalCost: totalIssueCost,
+        },
+
         currentStock: {
-          totalValue: currentStockValue, items: inventory.length,
+          totalValue: currentStockValue,
+          items: inventory.length,
           lowStockCount: lowStockItems.length,
           lowStockItems: lowStockItems.map(i => ({
-            _id: i._id, name: i.name, currentStock: i.currentStock, minimumStock: i.minimumStock, unit: i.unit
-          }))
-        }
-      }
+            _id: i._id,
+            name: i.name,
+            currentStock: i.currentStock,
+            minimumStock: i.minimumStock,
+            unit: i.unit,
+          })),
+        },
+
+        chefUsage,   // ← NEW
+      },
     });
   } catch (error) {
+    console.error('getInventoryReport error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 exports.getCostAnalysis = async (req, res) => {
   try {
@@ -781,11 +885,11 @@ exports.getCostAnalysis = async (req, res) => {
     const inventory = await Inventory.find({ branchId });
 
     const analysis = inventory.map(item => ({
-      itemName:           item.name, currentStock: item.currentStock, unit: item.unit,
-      averageCost:        item.averageCost,
-      currentValue:       item.currentStock * item.averageCost,
+      itemName: item.name, currentStock: item.currentStock, unit: item.unit,
+      averageCost: item.averageCost,
+      currentValue: item.currentStock * item.averageCost,
       totalPurchaseValue: item.totalPurchaseValue,
-      totalIssueValue:    item.totalIssueValue
+      totalIssueValue: item.totalIssueValue
     }));
 
     const totalInventoryValue = analysis.reduce((sum, a) => sum + a.currentValue, 0);
@@ -804,8 +908,8 @@ exports.getPendingReturnRequests = async (req, res) => {
     const requests = await InventoryReturnRequest.find({
       branchId: req.user.branchId, status: 'pending'
     })
-      .populate('chefId',         'name')
-      .populate('chefInventoryId','date')
+      .populate('chefId', 'name')
+      .populate('chefInventoryId', 'date')
       .populate('items.inventoryItemId', 'name unit currentStock')
       .sort({ createdAt: -1 });
 
@@ -832,20 +936,20 @@ exports.approveReturnRequest = async (req, res) => {
       if (!chefItem) continue;
 
       const maxReturnable = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
-      const actualReturn  = Math.min(parseFloat(ret.returnQuantity), maxReturnable);
+      const actualReturn = Math.min(parseFloat(ret.returnQuantity), maxReturnable);
       if (actualReturn <= 0) continue;
 
       chefItem.returnedQuantity += actualReturn;
 
       await Inventory.findByIdAndUpdate(ret.inventoryItemId, {
-        $inc:  { currentStock: actualReturn },
+        $inc: { currentStock: actualReturn },
         $push: { stockHistory: { date: new Date(), quantity: actualReturn, type: 'in' } }
       });
 
       await InventoryTransaction.create({
         itemId: ret.inventoryItemId, type: 'return',
         quantity: actualReturn, unit: ret.unit || chefItem.unit,
-        issuedTo:   returnReq.chefId,
+        issuedTo: returnReq.chefId,
         receivedBy: req.user._id,
         notes: `Chef return — officer approved. Request ID: ${returnReq._id}`,
         date: new Date()
@@ -859,7 +963,7 @@ exports.approveReturnRequest = async (req, res) => {
     if (allDone) chefRecord.returnedAt = new Date();
     await chefRecord.save();
 
-    returnReq.status     = 'approved';
+    returnReq.status = 'approved';
     returnReq.reviewedBy = req.user._id;
     returnReq.reviewedAt = new Date();
     await returnReq.save();
