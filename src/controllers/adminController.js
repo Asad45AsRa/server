@@ -839,7 +839,9 @@ exports.permanentDeleteUser = async (req, res) => {
 
 exports.getFinanceSummary = async (req, res) => {
   try {
-    const { branchId } = req.query;
+    const { branchId, startDate, endDate, period } = req.query;
+
+    // ── Build base queries ──
     let expQuery = {};
     let walletQuery = { isActive: true };
 
@@ -848,19 +850,50 @@ exports.getFinanceSummary = async (req, res) => {
       walletQuery.branchId = branchId;
     }
 
-    // Get all expenses across all branches
+    // ── Date range logic ──
+    // period: 'today' | 'week' | 'month' | 'year' | 'custom'
+    const now = new Date();
+    let dateStart = null;
+    let dateEnd = null;
+
+    if (period === 'today') {
+      dateStart = new Date(now); dateStart.setHours(0, 0, 0, 0);
+      dateEnd = new Date(now); dateEnd.setHours(23, 59, 59, 999);
+    } else if (period === 'week') {
+      const day = now.getDay();                          // 0=Sun
+      dateStart = new Date(now);
+      dateStart.setDate(now.getDate() - day);
+      dateStart.setHours(0, 0, 0, 0);
+      dateEnd = new Date(now); dateEnd.setHours(23, 59, 59, 999);
+    } else if (period === 'month') {
+      dateStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      dateEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    } else if (period === 'year') {
+      dateStart = new Date(now.getFullYear(), 0, 1);
+      dateEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+    } else if (period === 'custom' && startDate && endDate) {
+      dateStart = new Date(startDate); dateStart.setHours(0, 0, 0, 0);
+      dateEnd = new Date(endDate); dateEnd.setHours(23, 59, 59, 999);
+    }
+
+    if (dateStart && dateEnd) {
+      expQuery.date = { $gte: dateStart, $lte: dateEnd };
+    }
+
+    // ── Fetch expenses (with date filter) ──
     const expenses = await Expense.find(expQuery)
       .populate('addedBy', 'name')
       .populate('branchId', 'name')
       .sort({ date: -1 })
-      .limit(500); // last 500 expenses
+      .limit(1000);
 
-    // Get all customer wallets
+    // ── Fetch customer wallets (no date filter — wallets are current balance) ──
     const customers = await CustomerWallet.find(walletQuery)
       .select('-transactions')
       .populate('branchId', 'name')
       .sort({ name: 1 });
 
+    // ── Compute wallet totals ──
     const totalAdvance = customers.filter(c => c.balance > 0).reduce((s, c) => s + c.balance, 0);
     const totalDebt = customers.filter(c => c.balance < 0).reduce((s, c) => s + Math.abs(c.balance), 0);
     const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
@@ -875,6 +908,14 @@ exports.getFinanceSummary = async (req, res) => {
       acc[bn] = (acc[bn] || 0) + e.amount;
       return acc;
     }, {});
+
+    // ── Monthly breakdown (for charts / yearly view) ──
+    const monthlyBreakdown = {};
+    expenses.forEach(e => {
+      const d = new Date(e.date);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      monthlyBreakdown[key] = (monthlyBreakdown[key] || 0) + e.amount;
+    });
 
     res.json({
       success: true,
@@ -895,6 +936,14 @@ exports.getFinanceSummary = async (req, res) => {
         expenseByCategory,
         expenseByBranch,
         expenseCount: expenses.length,
+        monthlyBreakdown,
+      },
+      // Echo back applied filter for frontend awareness
+      appliedFilter: {
+        period: period || 'all',
+        startDate: dateStart,
+        endDate: dateEnd,
+        branchId: branchId || null,
       },
     });
   } catch (error) {
