@@ -1,18 +1,36 @@
 // controllers/cashierController.js  — RELEVANT SECTIONS
 // Only the changed/added functions shown — rest of file stays the same
 
-const Order    = require('../models/Order');
-const Payment  = require('../models/Payment');
-const Product  = require('../models/Product');
-const Deal     = require('../models/Deal');
-const Table    = require('../models/Table');
+const Order = require('../models/Order');
+const Payment = require('../models/Payment');
+const Product = require('../models/Product');
+const Deal = require('../models/Deal');
+const Table = require('../models/Table');
 const Inventory = require('../models/Inventory');
-const Expense  = require('../models/Expense'); // ✅ NEW
+const Expense = require('../models/Expense'); // ✅ NEW
 const { PaymentStatus } = require('../config/constants');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
 
 // ========== INVENTORY DEDUCTION HELPER ==========
+
+function getSessionWindow() {
+  const now = new Date();
+  const hour = now.getHours();
+
+  const sessionStart = new Date(now);
+  if (hour < 9) {
+    // Before 9 AM: session started yesterday
+    sessionStart.setDate(sessionStart.getDate() - 1);
+  }
+  sessionStart.setHours(9, 0, 0, 0);
+
+  const sessionEnd = new Date(sessionStart);
+  sessionEnd.setDate(sessionEnd.getDate() + 1);
+  sessionEnd.setHours(4, 0, 0, 0);
+
+  return { sessionStart, sessionEnd };
+}
 
 const deductInventoryForOrder = async (order) => {
   try {
@@ -86,9 +104,9 @@ exports.getPendingOrders = async (req, res) => {
         ],
       },
     })
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name')
+      .populate('chefId', 'name')
       .populate('items.itemId')
       .sort({ createdAt: 1 });
 
@@ -103,45 +121,75 @@ exports.getPendingOrders = async (req, res) => {
 exports.getCompletedOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { startDate, endDate, startDateTime, endDateTime, last24hours } = req.query;
+    const {
+      startDate,
+      endDate,
+      startDateTime,
+      endDateTime,
+      last24hours,
+      mySession,     // ✅ NEW param
+    } = req.query;
 
     let query = { branchId, status: 'completed' };
 
-    if (last24hours === 'true') {
-      // Last 24 hours from now
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      query.completedAt = { $gte: since };
+    // ── ✅ mySession: only this cashier's orders, 9AM–4AM window ────────
+    if (mySession === 'true') {
+      query.cashierId = req.user._id;
+      const { sessionStart, sessionEnd } = getSessionWindow();
+      query.completedAt = { $gte: sessionStart, $lte: sessionEnd };
+
+      // ── Existing: precise datetime range ────────────────────────────────
     } else if (startDateTime && endDateTime) {
-      // Precise date+time range
       query.completedAt = {
         $gte: new Date(startDateTime),
         $lte: new Date(endDateTime),
       };
+
+      // ── Existing: date-only range ────────────────────────────────────────
     } else if (startDate && endDate) {
-      // Full day date range
       query.completedAt = {
         $gte: new Date(startDate),
         $lte: new Date(new Date(endDate).setHours(23, 59, 59)),
       };
     } else if (startDate && !endDate) {
-      // Only start date — from that date onwards
       query.completedAt = { $gte: new Date(startDate) };
+
+      // ── Existing: last 24 hours (default fallback) ───────────────────────
+    } else if (last24hours === 'true') {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      query.completedAt = { $gte: since };
+
+      // ── Existing: no params → last 24 hours ─────────────────────────────
     } else {
-      // Default: last 24 hours if no filter provided
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
       query.completedAt = { $gte: since };
     }
 
     const orders = await Order.find(query)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name')
-      .populate('cashierId',     'name')
+      .populate('chefId', 'name')
+      .populate('cashierId', 'name')
       .populate('items.itemId')
       .sort({ completedAt: -1 })
-      .limit(500); // increased limit for date range queries
+      .limit(500);
 
-    res.json({ success: true, orders, count: orders.length });
+    // ── Return session window info when in mySession mode ────────────────
+    let sessionMeta = null;
+    if (mySession === 'true') {
+      const { sessionStart, sessionEnd } = getSessionWindow();
+      sessionMeta = {
+        start: sessionStart.toISOString(),
+        end: sessionEnd.toISOString(),
+      };
+    }
+
+    res.json({
+      success: true,
+      orders,
+      count: orders.length,
+      sessionMeta,   // null unless mySession=true
+    });
   } catch (error) {
     console.error('Get completed orders error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -152,10 +200,10 @@ exports.getCompletedOrders = async (req, res) => {
 exports.getOrderById = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name')
-      .populate('cashierId',     'name')
+      .populate('chefId', 'name')
+      .populate('cashierId', 'name')
       .populate('items.itemId');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -183,7 +231,7 @@ exports.receiveAdvancePayment = async (req, res) => {
     }
 
     const order = await Order.findById(orderId)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
@@ -192,36 +240,36 @@ exports.receiveAdvancePayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order already completed hai' });
     }
 
-    const prevAdvance   = Number(order.advancePaid || 0);
-    const orderTotal    = Number(order.total || 0);
-    const newAdvance    = prevAdvance + Number(amount);
+    const prevAdvance = Number(order.advancePaid || 0);
+    const orderTotal = Number(order.total || 0);
+    const newAdvance = prevAdvance + Number(amount);
     const cappedAdvance = Math.min(newAdvance, orderTotal);
 
-    order.advancePaid          = cappedAdvance;
+    order.advancePaid = cappedAdvance;
     order.advancePaymentMethod = method;
-    order.paymentStatus        = cappedAdvance >= orderTotal ? 'fully_advance' : 'partial_advance';
+    order.paymentStatus = cappedAdvance >= orderTotal ? 'fully_advance' : 'partial_advance';
     await order.save();
 
     await Payment.create({
-      orderId:        order._id,
-      branchId:       req.user.branchId,
-      amount:         Number(amount),
+      orderId: order._id,
+      branchId: req.user.branchId,
+      amount: Number(amount),
       method,
-      status:         'partial',
-      cashierId:      req.user._id,
-      waiterId:       order.waiterId,
-      deliveryBoyId:  order.deliveryBoyId,
+      status: 'partial',
+      cashierId: req.user._id,
+      waiterId: order.waiterId,
+      deliveryBoyId: order.deliveryBoyId,
       receivedAmount: Number(amount),
-      changeAmount:   0,
-      transactionId:  transactionId || '',
-      notes:          notes || 'Advance payment',
-      paidAt:         new Date(),
+      changeAmount: 0,
+      transactionId: transactionId || '',
+      notes: notes || 'Advance payment',
+      paidAt: new Date(),
     });
 
     const remaining = orderTotal - cappedAdvance;
 
     res.json({
-      success:     true,
+      success: true,
       order,
       advancePaid: cappedAdvance,
       remaining,
@@ -243,40 +291,40 @@ exports.completeAdvancePaidOrder = async (req, res) => {
     const orderId = req.params.id;
 
     const order = await Order.findById(orderId)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
     const advance = Number(order.advancePaid || 0);
-    const total   = Number(order.total || 0);
+    const total = Number(order.total || 0);
 
     if (advance < total) {
       return res.status(400).json({
-        success:  false,
+        success: false,
         message: `Order fully paid nahi hai. Remaining: Rs.${(total - advance).toLocaleString()}`,
       });
     }
 
     const payment = await Payment.create({
-      orderId:        order._id,
-      branchId:       req.user.branchId,
-      amount:         total,
-      method:         order.advancePaymentMethod || 'cash',
-      status:         PaymentStatus.PAID,
-      cashierId:      req.user._id,
-      waiterId:       order.waiterId,
-      deliveryBoyId:  order.deliveryBoyId,
+      orderId: order._id,
+      branchId: req.user.branchId,
+      amount: total,
+      method: order.advancePaymentMethod || 'cash',
+      status: PaymentStatus.PAID,
+      cashierId: req.user._id,
+      waiterId: order.waiterId,
+      deliveryBoyId: order.deliveryBoyId,
       receivedAmount: advance,
-      changeAmount:   Math.max(0, advance - total),
-      notes:          'Advance paid — order completed',
-      paidAt:         new Date(),
+      changeAmount: Math.max(0, advance - total),
+      notes: 'Advance paid — order completed',
+      paidAt: new Date(),
     });
 
-    order.status      = 'completed';
+    order.status = 'completed';
     order.completedAt = new Date();
-    order.cashierId   = req.user._id;
+    order.cashierId = req.user._id;
     await order.save();
 
     if (order.tableNumber) {
@@ -288,15 +336,15 @@ exports.completeAdvancePaidOrder = async (req, res) => {
 
     const populatedPayment = await Payment.findById(payment._id)
       .populate('cashierId', 'name')
-      .populate('waiterId',  'name')
+      .populate('waiterId', 'name')
       .populate('orderId');
 
     res.json({
-      success:  true,
-      payment:  populatedPayment,
+      success: true,
+      payment: populatedPayment,
       order,
       slipData: buildSlipData(order, populatedPayment),
-      message:  'Order completed successfully',
+      message: 'Order completed successfully',
     });
   } catch (error) {
     console.error('Complete advance paid order error:', error);
@@ -311,38 +359,38 @@ exports.receivePayment = async (req, res) => {
     const { orderId, amount, method, receivedAmount, transactionId, notes } = req.body;
 
     const order = await Order.findById(orderId)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
-    const advance         = Number(order.advancePaid || 0);
-    const orderTotal      = Number(order.total || 0);
+    const advance = Number(order.advancePaid || 0);
+    const orderTotal = Number(order.total || 0);
     const remainingAmount = Math.max(0, orderTotal - advance);
-    const finalAmount     = amount !== undefined ? Number(amount) : remainingAmount;
-    const finalReceived   = receivedAmount || order.cashReceived || finalAmount;
-    const changeAmount    = Math.max(0, Number(finalReceived) - remainingAmount);
+    const finalAmount = amount !== undefined ? Number(amount) : remainingAmount;
+    const finalReceived = receivedAmount || order.cashReceived || finalAmount;
+    const changeAmount = Math.max(0, Number(finalReceived) - remainingAmount);
 
     const payment = await Payment.create({
       orderId,
-      branchId:       req.user.branchId,
-      amount:         finalAmount,
+      branchId: req.user.branchId,
+      amount: finalAmount,
       method,
-      status:         PaymentStatus.PAID,
-      cashierId:      req.user._id,
-      waiterId:       order.waiterId,
-      deliveryBoyId:  order.deliveryBoyId,
+      status: PaymentStatus.PAID,
+      cashierId: req.user._id,
+      waiterId: order.waiterId,
+      deliveryBoyId: order.deliveryBoyId,
       receivedAmount: finalReceived,
       changeAmount,
       transactionId,
       notes,
-      paidAt:         new Date(),
+      paidAt: new Date(),
     });
 
-    order.status      = 'completed';
+    order.status = 'completed';
     order.completedAt = new Date();
-    order.cashierId   = req.user._id;
+    order.cashierId = req.user._id;
     await order.save();
 
     if (order.tableNumber) {
@@ -354,15 +402,15 @@ exports.receivePayment = async (req, res) => {
 
     const populatedPayment = await Payment.findById(payment._id)
       .populate('cashierId', 'name')
-      .populate('waiterId',  'name')
+      .populate('waiterId', 'name')
       .populate('orderId');
 
     res.json({
-      success:  true,
-      payment:  populatedPayment,
+      success: true,
+      payment: populatedPayment,
       order,
       slipData: buildSlipData(order, populatedPayment),
-      message:  'Payment received successfully',
+      message: 'Payment received successfully',
     });
   } catch (error) {
     console.error('Receive payment error:', error);
@@ -373,41 +421,41 @@ exports.receivePayment = async (req, res) => {
 // ========== PAYMENT SLIP ==========
 
 const buildSlipData = (order, payment) => ({
-  orderNumber:       order.orderNumber,
-  orderType:         order.orderType,
-  tableNumber:       order.tableNumber,
-  customerName:      order.customerName    || null,
-  customerPhone:     order.customerPhone   || null,
-  deliveryAddress:   order.deliveryAddress || null,
-  deliveryBoy:       payment.deliveryBoyId?.name || null,
+  orderNumber: order.orderNumber,
+  orderType: order.orderType,
+  tableNumber: order.tableNumber,
+  customerName: order.customerName || null,
+  customerPhone: order.customerPhone || null,
+  deliveryAddress: order.deliveryAddress || null,
+  deliveryBoy: payment.deliveryBoyId?.name || null,
   distanceTravelled: order.distanceTravelled || null,
   startMeterReading: order.startMeterReading || null,
-  endMeterReading:   order.endMeterReading   || null,
+  endMeterReading: order.endMeterReading || null,
   items: order.items.map(item => ({
-    name:     item.itemId?.name || item.name || 'Item',
-    size:     item.size,
+    name: item.itemId?.name || item.name || 'Item',
+    size: item.size,
     quantity: item.quantity,
-    price:    item.price,
+    price: item.price,
     subtotal: item.price * item.quantity,
   })),
-  subtotal:       order.subtotal || order.total,
-  discount:       order.discount || 0,
-  total:          order.total,
-  advancePaid:    order.advancePaid || 0,
-  paymentMethod:  payment.method,
+  subtotal: order.subtotal || order.total,
+  discount: order.discount || 0,
+  total: order.total,
+  advancePaid: order.advancePaid || 0,
+  paymentMethod: payment.method,
   receivedAmount: payment.receivedAmount,
-  changeAmount:   payment.changeAmount,
-  cashier:        payment.cashierId?.name || 'Cashier',
-  waiter:         payment.waiterId?.name  || null,
-  paidAt:         payment.paidAt,
-  branchName:     BRANCH_NAME,
+  changeAmount: payment.changeAmount,
+  cashier: payment.cashierId?.name || 'Cashier',
+  waiter: payment.waiterId?.name || null,
+  paidAt: payment.paidAt,
+  branchName: BRANCH_NAME,
 });
 
 exports.getPaymentSlip = async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.id)
-      .populate('cashierId',     'name')
-      .populate('waiterId',      'name')
+      .populate('cashierId', 'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate({
         path: 'orderId',
@@ -419,7 +467,7 @@ exports.getPaymentSlip = async (req, res) => {
 
     if (!payment) return res.status(404).json({ success: false, message: 'Payment not found' });
 
-    const order    = payment.orderId;
+    const order = payment.orderId;
     const slipData = buildSlipData(order, payment);
 
     res.json({ success: true, slipData });
@@ -443,9 +491,9 @@ exports.getPaymentHistory = async (req, res) => {
     }
 
     const payments = await Payment.find(query)
-      .populate('orderId',   'orderNumber total orderType')
+      .populate('orderId', 'orderNumber total orderType')
       .populate('cashierId', 'name')
-      .populate('waiterId',  'name')
+      .populate('waiterId', 'name')
       .sort({ paidAt: -1 })
       .limit(100);
 
@@ -463,11 +511,11 @@ exports.getPaymentHistory = async (req, res) => {
 exports.getHourlyIncomeReport = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { date }  = req.query;
+    const { date } = req.query;
 
     const reportDate = date ? new Date(date) : new Date();
-    const startOfDay = new Date(reportDate); startOfDay.setHours(0,  0,  0,   0);
-    const endOfDay   = new Date(reportDate); endOfDay.setHours(23, 59, 59, 999);
+    const startOfDay = new Date(reportDate); startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(reportDate); endOfDay.setHours(23, 59, 59, 999);
 
     const payments = await Payment.find({
       branchId,
@@ -487,20 +535,20 @@ exports.getHourlyIncomeReport = async (req, res) => {
     payments.forEach(payment => {
       const hour = new Date(payment.paidAt).getHours();
       hourlyData[hour].totalAmount += payment.amount;
-      hourlyData[hour].orderCount  += 1;
-      if      (payment.method === 'cash')   hourlyData[hour].cash   += payment.amount;
-      else if (payment.method === 'card')   hourlyData[hour].card   += payment.amount;
+      hourlyData[hour].orderCount += 1;
+      if (payment.method === 'cash') hourlyData[hour].cash += payment.amount;
+      else if (payment.method === 'card') hourlyData[hour].card += payment.amount;
       else if (payment.method === 'online') hourlyData[hour].online += payment.amount;
     });
 
     const hourlyArray = Object.values(hourlyData).filter(h => h.totalAmount > 0 || h.orderCount > 0);
     const summary = {
       totalRevenue: payments.reduce((s, p) => s + p.amount, 0),
-      totalOrders:  payments.length,
-      cashTotal:    payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0),
-      cardTotal:    payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0),
-      onlineTotal:  payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0),
-      peakHour:     hourlyArray.length > 0
+      totalOrders: payments.length,
+      cashTotal: payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0),
+      cardTotal: payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0),
+      onlineTotal: payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0),
+      peakHour: hourlyArray.length > 0
         ? hourlyArray.reduce((max, h) => h.totalAmount > max.totalAmount ? h : max, hourlyArray[0])
         : null,
     };
@@ -525,7 +573,7 @@ exports.getCashierShiftReport = async (req, res) => {
     }
 
     const start = new Date(startDateTime);
-    const end   = new Date(endDateTime);
+    const end = new Date(endDateTime);
 
     // ── Payments in range ──
     const payments = await Payment.find({
@@ -534,7 +582,7 @@ exports.getCashierShiftReport = async (req, res) => {
       status: { $ne: 'advance' },
     })
       .populate('cashierId', 'name')
-      .populate('orderId',   'orderNumber orderType');
+      .populate('orderId', 'orderNumber orderType');
 
     // ── Expenses in range ──
     const expenses = await Expense.find({
@@ -543,26 +591,26 @@ exports.getCashierShiftReport = async (req, res) => {
     }).populate('addedBy', 'name');
 
     // ── Summary calculations ──
-    const totalRevenue  = payments.reduce((s, p) => s + p.amount, 0);
-    const cashReceived  = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
-    const cardReceived  = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
+    const totalRevenue = payments.reduce((s, p) => s + p.amount, 0);
+    const cashReceived = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
+    const cardReceived = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
     const onlineReceived = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
-    const jazzReceived  = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
-    const easyReceived  = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
+    const jazzReceived = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
+    const easyReceived = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
 
     const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
-    const netAmount     = totalRevenue - totalExpenses;
+    const netAmount = totalRevenue - totalExpenses;
 
     res.json({
       success: true,
       period: {
         start: start.toISOString(),
-        end:   end.toISOString(),
+        end: end.toISOString(),
       },
       payments,
       expenses,
       summary: {
-        totalOrders:    payments.length,
+        totalOrders: payments.length,
         totalRevenue,
         cashReceived,
         cardReceived,
@@ -610,7 +658,7 @@ exports.createProduct = async (req, res) => {
     const productData = { ...req.body, branchId: req.user.branchId, createdBy: req.user._id };
     const product = await Product.create(productData);
     const populatedProduct = await Product.findById(product._id)
-      .populate('branchId',  'name')
+      .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit');
     res.status(201).json({ success: true, product: populatedProduct, message: 'Product created successfully' });
@@ -623,7 +671,7 @@ exports.createProduct = async (req, res) => {
 exports.updateProduct = async (req, res) => {
   try {
     const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true })
-      .populate('branchId',  'name')
+      .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit');
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
@@ -638,7 +686,7 @@ exports.getProducts = async (req, res) => {
   try {
     const branchId = req.user.branchId;
     const products = await Product.find({ branchId })
-      .populate('branchId',  'name')
+      .populate('branchId', 'name')
       .populate('createdBy', 'name')
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
       .sort({ createdAt: -1 });
@@ -662,7 +710,7 @@ exports.createDeal = async (req, res) => {
     });
     const deal = await Deal.create({ ...rest, products: cleanedProducts, branchId: req.user.branchId, createdBy: req.user._id });
     const populatedDeal = await Deal.findById(deal._id)
-      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image');
+      .populate('branchId', 'name').populate('createdBy', 'name').populate('products.productId', 'name image');
     res.status(201).json({ success: true, deal: populatedDeal, message: 'Deal created successfully' });
   } catch (error) {
     console.error('Create deal error:', error);
@@ -680,7 +728,7 @@ exports.updateDeal = async (req, res) => {
       return cleaned;
     });
     const deal = await Deal.findByIdAndUpdate(req.params.id, { ...rest, products: cleanedProducts }, { new: true })
-      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image');
+      .populate('branchId', 'name').populate('createdBy', 'name').populate('products.productId', 'name image');
     if (!deal) return res.status(404).json({ success: false, message: 'Deal not found' });
     res.json({ success: true, deal, message: 'Deal updated successfully' });
   } catch (error) {
@@ -692,7 +740,7 @@ exports.updateDeal = async (req, res) => {
 exports.getDeals = async (req, res) => {
   try {
     const deals = await Deal.find({ branchId: req.user.branchId })
-      .populate('branchId','name').populate('createdBy','name').populate('products.productId','name image')
+      .populate('branchId', 'name').populate('createdBy', 'name').populate('products.productId', 'name image')
       .sort({ createdAt: -1 });
     res.json({ success: true, deals, count: deals.length });
   } catch (error) {
@@ -802,42 +850,42 @@ exports.createOrder = async (req, res) => {
       subtotal += itemSubtotal;
 
       processedItems.push({
-        itemId:          item.itemId,
-        itemType:        item.itemType || 'Product',
-        type:            item.type     || 'product',
-        name:            item.name     || 'Item',
-        size:            item.size     || null,
-        quantity:        Number(item.quantity) || 1,
-        price:           Number(item.price)    || 0,
-        subtotal:        itemSubtotal,
-        preparationTime: item.preparationTime  || 0,
-        isColdDrink:     item.isColdDrink      || false,
-        coldDrinkId:     item.coldDrinkId      || null,
-        coldDrinkSizeId: item.coldDrinkSizeId  || null,
+        itemId: item.itemId,
+        itemType: item.itemType || 'Product',
+        type: item.type || 'product',
+        name: item.name || 'Item',
+        size: item.size || null,
+        quantity: Number(item.quantity) || 1,
+        price: Number(item.price) || 0,
+        subtotal: itemSubtotal,
+        preparationTime: item.preparationTime || 0,
+        isColdDrink: item.isColdDrink || false,
+        coldDrinkId: item.coldDrinkId || null,
+        coldDrinkSizeId: item.coldDrinkSizeId || null,
       });
     }
 
     const discountAmt = Math.min(Number(discount) || 0, subtotal);
-    const total       = subtotal - discountAmt;
+    const total = subtotal - discountAmt;
 
-    const today     = new Date();
-    const dateStr   = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count     = await Order.countDocuments({ branchId, createdAt: { $gte: new Date(today.setHours(0,0,0,0)) } });
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const count = await Order.countDocuments({ branchId, createdAt: { $gte: new Date(today.setHours(0, 0, 0, 0)) } });
     const orderNumber = `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
 
     const order = await Order.create({
       orderNumber, branchId,
-      orderType:       orderType    || 'dine_in',
-      tableNumber:     tableNumber  || null,
-      floor:           floor        || null,
-      customerName:    customerName || null,
-      customerPhone:   customerPhone|| null,
+      orderType: orderType || 'dine_in',
+      tableNumber: tableNumber || null,
+      floor: floor || null,
+      customerName: customerName || null,
+      customerPhone: customerPhone || null,
       deliveryAddress: deliveryAddress || null,
-      cashierNote:     cashierNote  || '',
-      notes:           notes        || '',
-      items:           processedItems,
+      cashierNote: cashierNote || '',
+      notes: notes || '',
+      items: processedItems,
       subtotal, discount: discountAmt, total, tax: 0,
-      status:    'pending',
+      status: 'pending',
       cashierId: req.user._id,
     });
 
@@ -849,27 +897,27 @@ exports.createOrder = async (req, res) => {
     }
 
     const populatedOrder = await Order.findById(order._id)
-      .populate('cashierId',     'name')
-      .populate('waiterId',      'name')
+      .populate('cashierId', 'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
     const io = req.app.get('io');
     if (io) {
       io.to(String(branchId)).emit('new-order', {
-        orderId:     order._id,
+        orderId: order._id,
         orderNumber: order.orderNumber,
-        orderType:   order.orderType,
+        orderType: order.orderType,
         tableNumber: order.tableNumber,
-        floor:       order.floor,
-        total:       order.total,
-        itemCount:   processedItems.length,
+        floor: order.floor,
+        total: order.total,
+        itemCount: processedItems.length,
       });
     }
 
     res.status(201).json({
       success: true,
-      order:   populatedOrder,
+      order: populatedOrder,
       message: `Order #${orderNumber} created successfully`,
     });
   } catch (error) {
