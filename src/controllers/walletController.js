@@ -309,29 +309,24 @@ exports.getWalletSummary = async (req, res) => {
 exports.getExpenses = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { date, category, startDate, endDate } = req.query;
+    const { date, category, paymentMethod, startDate, endDate } = req.query;  // ✅ added paymentMethod
 
     let query = { branchId };
 
-    // Single date filter
     if (date) {
-      const start = new Date(date);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(date);
-      end.setHours(23, 59, 59, 999);
-      query.date = { $gte: start, $lte: end };
+      const start = new Date(date); start.setHours(0, 0, 0, 0);
+      const end   = new Date(date); end.setHours(23, 59, 59, 999);
+      query.date  = { $gte: start, $lte: end };
     }
 
-    // Date range filter
     if (!date && startDate && endDate) {
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      query.date = { $gte: start, $lte: end };
+      const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      query.date  = { $gte: start, $lte: end };
     }
 
-    if (category) query.category = category;
+    if (category)      query.category      = category;
+    if (paymentMethod) query.paymentMethod = paymentMethod;  // ✅ NEW
 
     const expenses = await Expense.find(query)
       .populate('addedBy', 'name')
@@ -343,24 +338,26 @@ exports.getExpenses = async (req, res) => {
   }
 };
 
+
 // ========== CREATE EXPENSE ==========
 exports.createExpense = async (req, res) => {
   try {
-    const { title, amount, category, paidTo, description, date } = req.body;
+    const { title, amount, category, paymentMethod, paidTo, description, date } = req.body;
 
     if (!title || !amount || parseFloat(amount) <= 0) {
       return res.status(400).json({ success: false, message: 'Title aur valid amount zaroori hai' });
     }
 
     const expense = await Expense.create({
-      branchId:    req.user.branchId,
+      branchId:      req.user.branchId,
       title,
-      amount:      parseFloat(amount),
-      category:    category || 'other',
-      paidTo:      paidTo   || '',
-      description: description || '',
-      date:        date ? new Date(date) : new Date(),
-      addedBy:     req.user._id,
+      amount:        parseFloat(amount),
+      category:      category      || 'other',
+      paymentMethod: paymentMethod || 'cash',   // ✅ NEW
+      paidTo:        paidTo        || '',
+      description:   description   || '',
+      date:          date ? new Date(date) : new Date(),
+      addedBy:       req.user._id,
     });
 
     const populated = await Expense.findById(expense._id).populate('addedBy', 'name');
@@ -374,17 +371,18 @@ exports.createExpense = async (req, res) => {
 // ========== UPDATE EXPENSE ==========
 exports.updateExpense = async (req, res) => {
   try {
-    const { title, amount, category, paidTo, description, date } = req.body;
+    const { title, amount, category, paymentMethod, paidTo, description, date } = req.body;
 
     const expense = await Expense.findOneAndUpdate(
       { _id: req.params.id, branchId: req.user.branchId },
       {
         title,
-        amount:      parseFloat(amount),
-        category:    category || 'other',
-        paidTo:      paidTo   || '',
-        description: description || '',
-        date:        date ? new Date(date) : undefined,
+        amount:        parseFloat(amount),
+        category:      category      || 'other',
+        paymentMethod: paymentMethod || 'cash',   // ✅ NEW
+        paidTo:        paidTo        || '',
+        description:   description   || '',
+        date:          date ? new Date(date) : undefined,
       },
       { new: true }
     ).populate('addedBy', 'name');
@@ -398,6 +396,7 @@ exports.updateExpense = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // ========== DELETE EXPENSE ==========
 exports.deleteExpense = async (req, res) => {
@@ -422,7 +421,7 @@ exports.getExpenseSummary = async (req, res) => {
   try {
     const branchId = req.user.branchId;
 
-    const now       = new Date();
+    const now        = new Date();
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
     const todayEnd   = new Date(now); todayEnd.setHours(23, 59, 59, 999);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -438,19 +437,28 @@ exports.getExpenseSummary = async (req, res) => {
       byCategory[e.category] = (byCategory[e.category] || 0) + e.amount;
     });
 
+    // ✅ NEW: Payment Method breakdown (all time)
+    const byPaymentMethod = {};
+    allExpenses.forEach(e => {
+      const method = e.paymentMethod || 'cash';
+      byPaymentMethod[method] = (byPaymentMethod[method] || 0) + e.amount;
+    });
+
     res.json({
-      success:        true,
-      today:          todayExpenses.reduce((s, e) => s + e.amount, 0),
-      todayCount:     todayExpenses.length,
-      thisMonth:      monthExpenses.reduce((s, e) => s + e.amount, 0),
-      thisMonthCount: monthExpenses.length,
-      total:          allExpenses.reduce((s, e) => s + e.amount, 0),
+      success:         true,
+      today:           todayExpenses.reduce((s, e) => s + e.amount, 0),
+      todayCount:      todayExpenses.length,
+      thisMonth:       monthExpenses.reduce((s, e) => s + e.amount, 0),
+      thisMonthCount:  monthExpenses.length,
+      total:           allExpenses.reduce((s, e) => s + e.amount, 0),
       byCategory,
+      byPaymentMethod,  // ✅ NEW
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // ========== GET EXPENSES FOR DATE+TIME RANGE (used by cashier slip) ==========
 exports.getExpensesByDateTimeRange = async (req, res) => {

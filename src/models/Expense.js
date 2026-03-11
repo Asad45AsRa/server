@@ -23,14 +23,20 @@ const ExpenseSchema = new mongoose.Schema(
       enum:    ['salary', 'utility', 'rent', 'grocery', 'maintenance', 'transport', 'other'],
       default: 'other',
     },
+    // ✅ NEW: Payment method field
+    paymentMethod: {
+      type:    String,
+      enum:    ['cash', 'card', 'jazz_cash', 'easypaisa'],
+      default: 'cash',
+    },
     paidTo: {
-      type:  String,
-      trim:  true,
+      type:    String,
+      trim:    true,
       default: '',
     },
     description: {
-      type:  String,
-      trim:  true,
+      type:    String,
+      trim:    true,
       default: '',
     },
     date: {
@@ -45,8 +51,9 @@ const ExpenseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Index for fast queries by branch + date
+// Indexes for fast queries
 ExpenseSchema.index({ branchId: 1, date: -1 });
 ExpenseSchema.index({ branchId: 1, category: 1 });
+ExpenseSchema.index({ branchId: 1, paymentMethod: 1 }); // ✅ NEW
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

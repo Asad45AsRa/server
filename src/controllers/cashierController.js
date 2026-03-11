@@ -573,7 +573,7 @@ exports.getCashierShiftReport = async (req, res) => {
     }
 
     const start = new Date(startDateTime);
-    const end = new Date(endDateTime);
+    const end   = new Date(endDateTime);
 
     // ── Payments in range ──
     const payments = await Payment.find({
@@ -590,27 +590,33 @@ exports.getCashierShiftReport = async (req, res) => {
       date: { $gte: start, $lte: end },
     }).populate('addedBy', 'name');
 
-    // ── Summary calculations ──
-    const totalRevenue = payments.reduce((s, p) => s + p.amount, 0);
-    const cashReceived = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
-    const cardReceived = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
-    const onlineReceived = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
-    const jazzReceived = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
-    const easyReceived = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
+    // ── Revenue summary ──
+    const totalRevenue    = payments.reduce((s, p) => s + p.amount, 0);
+    const cashReceived    = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
+    const cardReceived    = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
+    const onlineReceived  = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
+    const jazzReceived    = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
+    const easyReceived    = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
 
+    // ── Expense summary ──
     const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+
+    // ✅ NEW: Expense breakdown by payment method
+    const expensesByMethod = {};
+    expenses.forEach(e => {
+      const method = e.paymentMethod || 'cash';
+      expensesByMethod[method] = (expensesByMethod[method] || 0) + e.amount;
+    });
+
     const netAmount = totalRevenue - totalExpenses;
 
     res.json({
       success: true,
-      period: {
-        start: start.toISOString(),
-        end: end.toISOString(),
-      },
+      period: { start: start.toISOString(), end: end.toISOString() },
       payments,
       expenses,
       summary: {
-        totalOrders: payments.length,
+        totalOrders:       payments.length,
         totalRevenue,
         cashReceived,
         cardReceived,
@@ -618,6 +624,7 @@ exports.getCashierShiftReport = async (req, res) => {
         jazzReceived,
         easyReceived,
         totalExpenses,
+        expensesByMethod,   // ✅ NEW
         netAmount,
       },
     });
