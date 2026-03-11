@@ -926,4 +926,139 @@ exports.createOrder = async (req, res) => {
   }
 };
 
+exports.getAmountSummary = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { sessionStart, sessionEnd } = getSessionWindow();
+
+    const payments = await Payment.find({
+      branchId,
+      paidAt: { $gte: sessionStart, $lte: sessionEnd },
+      status: { $ne: 'advance' },
+    })
+      .populate('orderId', 'orderNumber orderType')
+      .sort({ paidAt: -1 });
+
+    // Breakdown by method
+    const breakdown = {};
+    for (const m of ['cash', 'card', 'online', 'jazz_cash', 'easypaisa']) {
+      breakdown[`${m}Total`] = payments
+        .filter(p => p.method === m)
+        .reduce((s, p) => s + p.amount, 0);
+    }
+
+    const totalRevenue     = payments.reduce((s, p) => s + p.amount, 0);
+    const totalTransactions = payments.length;
+    const recentPayments   = payments.slice(0, 10);
+
+    res.json({
+      success: true,
+      period: {
+        start: sessionStart.toISOString(),
+        end:   sessionEnd.toISOString(),
+      },
+      summary: {
+        totalRevenue,
+        totalTransactions,
+        ...breakdown,
+      },
+      recentPayments,
+    });
+  } catch (error) {
+    console.error('Amount summary error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.addMissedOrderPayment = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { orderId, orderNumber, amount, method, notes } = req.body;
+
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId zaroori hai' });
+    }
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount zaroori hai' });
+    }
+
+    // Verify the order belongs to this branch
+    const order = await Order.findOne({ _id: orderId, branchId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order nahi mila ya unauthorized' });
+    }
+
+    const payment = await Payment.create({
+      orderId,
+      branchId,
+      amount:        Number(amount),
+      method:        method || 'cash',
+      status:        'paid',
+      cashierId:     req.user._id,
+      receivedAmount: Number(amount),
+      changeAmount:  0,
+      notes:         notes || `Missed payment manually added for ${orderNumber || order.orderNumber}`,
+      paidAt:        new Date(),
+    });
+
+    const populated = await Payment.findById(payment._id)
+      .populate('cashierId', 'name')
+      .populate('orderId', 'orderNumber total orderType');
+
+    res.json({
+      success: true,
+      payment: populated,
+      message: `✅ Missed payment Rs.${Number(amount).toLocaleString()} added for ${order.orderNumber}`,
+    });
+  } catch (error) {
+    console.error('Add missed payment error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.addManualPayment = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const { description, amount, method, receivedFrom, transactionId, notes } = req.body;
+
+    if (!description?.trim()) {
+      return res.status(400).json({ success: false, message: 'Description zaroori hai' });
+    }
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount zaroori hai' });
+    }
+
+    const payment = await Payment.create({
+      // orderId intentionally omitted (make it optional in schema)
+      branchId,
+      amount:        Number(amount),
+      method:        method || 'cash',
+      status:        'paid',
+      cashierId:     req.user._id,
+      receivedAmount: Number(amount),
+      changeAmount:  0,
+      transactionId: transactionId || '',
+      notes:         [
+        description,
+        receivedFrom ? `From: ${receivedFrom}` : '',
+        notes || '',
+      ].filter(Boolean).join(' | '),
+      isManual:      true,   // flag for UI distinction
+      paidAt:        new Date(),
+    });
+
+    const populated = await Payment.findById(payment._id)
+      .populate('cashierId', 'name');
+
+    res.json({
+      success: true,
+      payment: populated,
+      message: `✅ Manual payment Rs.${Number(amount).toLocaleString()} add ho gayi`,
+    });
+  } catch (error) {
+    console.error('Manual payment error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
