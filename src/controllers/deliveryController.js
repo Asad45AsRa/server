@@ -20,17 +20,26 @@ const resolveItemType = (item) => {
 exports.getMenu = async (req, res) => {
   try {
     const branchId = req.user.branchId;
+    const now      = new Date();
 
     const products = await Product.find({ branchId, isAvailable: true })
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
       .lean();
 
+    // ✅ FIX: Include deals with no date range OR valid date range
     const rawDeals = await Deal.find({
       branchId,
-      isActive:   true,
-      validFrom:  { $lte: new Date() },
-      validUntil: { $gte: new Date() },
-    }).populate('products.productId', 'name image').lean();
+      isActive: true,
+      $or: [
+        { validFrom: { $lte: now }, validUntil: { $gte: now } }, // valid date range
+        { validFrom: { $exists: false } },                        // no date set
+        { validFrom: null },                                      // date is null
+        { validUntil: { $exists: false } },                       // no end date
+        { validUntil: null },                                     // end date null
+      ],
+    })
+      .populate('products.productId', 'name image')
+      .lean();
 
     const deals = rawDeals.map(d => ({
       ...d,
@@ -38,7 +47,7 @@ exports.getMenu = async (req, res) => {
       discountedPrice: d.discountedPrice,
     }));
 
-    const now = new Date();
+    // ── Cold Drinks ──
     let coldDrinks = [];
     try {
       const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
@@ -50,15 +59,28 @@ exports.getMenu = async (req, res) => {
           category: 'cold_drinks',
           sizes:    d.sizes
             .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
-            .map(s => ({ _id: s._id, size: s.size, price: s.salePrice, currentStock: s.currentStock })),
+            .map(s => ({
+              _id:          s._id,
+              size:         s.size,
+              price:        s.salePrice,
+              currentStock: s.currentStock,
+            })),
         }))
         .filter(d => d.sizes.length > 0);
     } catch (e) {
       const invDrinks = await Inventory.find({
         branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 },
       }).lean();
-      coldDrinks = invDrinks;
+      coldDrinks = invDrinks.map(d => ({
+        _id:      d._id,
+        name:     d.name,
+        category: 'cold_drinks',
+        price:    d.salePrice || d.price,
+        salePrice:d.salePrice || d.price,
+      }));
     }
+
+    console.log(`[DeliveryMenu] Branch:${branchId} Products:${products.length} Deals:${deals.length} Drinks:${coldDrinks.length}`);
 
     res.json({
       success: true,
@@ -66,7 +88,7 @@ exports.getMenu = async (req, res) => {
       counts:  { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length },
     });
   } catch (error) {
-    console.error('Get menu error:', error);
+    console.error('Get delivery menu error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -78,24 +100,32 @@ exports.createDeliveryOrder = async (req, res) => {
     const {
       items, customerName, customerPhone,
       deliveryAddress, notes,
-      orderType = 'delivery', // ✅ NEW: default 'delivery'
+      orderType = 'delivery', // ✅ 'delivery' | 'takeaway'
     } = req.body;
 
     if (!customerName || !customerPhone) {
       return res.status(400).json({ success: false, message: 'Customer name aur phone zaroori hain' });
     }
-
-    // ✅ Address sirf delivery ke liye required
     if (orderType === 'delivery' && !deliveryAddress) {
       return res.status(400).json({ success: false, message: 'Delivery address zaroori hai' });
     }
-
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Kam se kam ek item hona chahiye' });
     }
 
-    const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
+    const resolveItemType = (item) => {
+      if (item.itemType) return item.itemType;
+      if (item.type === 'cold_drink') return 'Inventory';
+      if (item.type === 'deal')       return 'Deal';
+      return 'Product';
+    };
 
+    const processedItems = items.map(item => ({
+      ...item,
+      itemType: resolveItemType(item),
+    }));
+
+    // Stock check for cold drinks
     for (const item of processedItems) {
       if (item.type === 'cold_drink') {
         try {
@@ -105,34 +135,39 @@ exports.createDeliveryOrder = async (req, res) => {
             if (sizeVariant && sizeVariant.currentStock < item.quantity) {
               return res.status(400).json({
                 success: false,
-                message: `Insufficient stock for ${coldDrink.name} (${sizeVariant.size})`,
+                message: `Insufficient stock: ${coldDrink.name} (${sizeVariant.size})`,
               });
             }
           }
-        } catch (e) {
-          const cd = await Inventory.findById(item.itemId);
-          if (!cd || cd.currentStock < item.quantity) {
-            return res.status(400).json({ success: false, message: 'Insufficient stock for cold drink' });
-          }
-        }
+        } catch {}
       }
     }
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
+    // Takeaway: +10 min, Delivery: +20 min
     const estimatedTime = calculateTotalTime(processedItems) + (orderType === 'takeaway' ? 10 : 20);
+
+    // Build cashierNote so cashier knows it's takeaway
+    let cashierNote = '';
+    if (orderType === 'takeaway') {
+      cashierNote = `🥡 Takeaway — ${customerName} | ${customerPhone}`;
+    } else {
+      cashierNote = `🚚 Delivery — ${customerName} | ${customerPhone}`;
+    }
 
     const orderData = {
       orderNumber:   generateOrderNumber(),
       branchId:      req.user.branchId,
-      orderType,                            // ✅ 'delivery' or 'takeaway'
+      orderType,
       items:         processedItems,
       subtotal, tax, total, estimatedTime,
       deliveryBoyId: req.user._id,
-      customerName, customerPhone, notes,
+      customerName, customerPhone,
+      notes,
+      cashierNote,
       status: 'pending',
     };
 
-    // ✅ Address sirf delivery orders mein save karo
     if (orderType === 'delivery' && deliveryAddress) {
       orderData.deliveryAddress = deliveryAddress;
     }
@@ -141,14 +176,14 @@ exports.createDeliveryOrder = async (req, res) => {
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     res.status(201).json({
       success: true,
       order:   populatedOrder,
       message: orderType === 'takeaway'
-        ? 'Takeaway order kitchen mein bhej diya!'
-        : 'Delivery order create ho gaya!',
+        ? '🥡 Takeaway order kitchen mein bhej diya!'
+        : '🚚 Delivery order create ho gaya!',
     });
   } catch (error) {
     console.error('Create delivery order error:', error);
@@ -260,26 +295,26 @@ exports.updateOrderStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    order.status = status;
+    // ✅ Takeaway orders — delivery boy directly "delivered" karta hai
+    //    (markDeliveredTakeaway route use karo, yahan sirf delivery orders)
+    if (order.orderType === 'takeaway' && status === 'out_for_delivery') {
+      return res.status(400).json({
+        success: false,
+        message: 'Takeaway orders ke liye /mark-delivered route use karein',
+      });
+    }
 
-    if (status === 'out_for_delivery') {
-      order.departedAt = new Date();
-    }
-    if (status === 'delivered') {
-      order.deliveredAt = new Date();
-    }
-    // ✅ NEW: takeaway direct complete
-    if (status === 'completed') {
-      order.completedAt = new Date();
-    }
+    order.status = status;
+    if (status === 'out_for_delivery') order.departedAt  = new Date();
+    if (status === 'delivered')        order.deliveredAt = new Date();
 
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
-    res.json({ success: true, order: populatedOrder, message: `Order updated to ${status}` });
+    res.json({ success: true, order: populatedOrder, message: `Status updated to ${status}` });
   } catch (error) {
     console.error('Update order status error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -455,6 +490,67 @@ exports.getDeliveryHistory = async (req, res) => {
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
     console.error('Get delivery history error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.markDeliveredTakeaway = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Only delivery boy jo is order ka owner hai
+    if (String(order.deliveryBoyId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Yeh aapki order nahi hai' });
+    }
+
+    // Sirf takeaway orders
+    if (order.orderType !== 'takeaway') {
+      return res.status(400).json({
+        success: false,
+        message: 'Yeh function sirf takeaway orders ke liye hai',
+      });
+    }
+
+    // Sirf ready orders deliver ho sakti hain
+    if (order.status !== 'ready') {
+      return res.status(400).json({
+        success: false,
+        message: `Order sirf ready hone ke baad deliver ho sakti hai. Current status: ${order.status}`,
+      });
+    }
+
+    order.status      = 'delivered';
+    order.deliveredAt = new Date();
+    await order.save();
+
+    // Notify cashier via socket
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${req.user.branchId}`).emit('order-updated', {
+        orderId:     String(order._id),
+        orderNumber: order.orderNumber,
+        newStatus:   'delivered',
+        orderType:   'takeaway',
+        message:     `🥡 Takeaway #${order.orderNumber} — Customer ko de diya. Payment pending.`,
+      });
+    }
+
+    const populatedOrder = await Order.findById(order._id)
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId', 'name');
+
+    res.json({
+      success: true,
+      order:   populatedOrder,
+      message: `✅ Order #${order.orderNumber} delivered! Cashier payment receive karega.`,
+    });
+  } catch (error) {
+    console.error('markDeliveredTakeaway error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

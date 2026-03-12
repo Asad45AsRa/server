@@ -14,6 +14,7 @@ const {
   requestPrint,        // ✅ NEW
   updateOrder,
   getDeliveryHistory,
+  markDeliveredTakeaway,
 } = require('../controllers/deliveryController');
 
 router.use(protect);
@@ -22,6 +23,7 @@ router.use(checkRole(UserRole.DELIVERY));
 router.get('/menu',                          getMenu);
 router.post('/orders',                       createDeliveryOrder);
 router.get('/orders/my-orders',              getMyOrders);
+router.put('/orders/:id/mark-delivered',     markDeliveredTakeaway);
 router.get('/orders/unassigned',             getUnassignedOrders);   // specific before /:id
 router.get('/orders/history',                getDeliveryHistory);    // specific before /:id
 router.put('/orders/claim',                  claimOrder);
