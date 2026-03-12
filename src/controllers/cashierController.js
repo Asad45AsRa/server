@@ -99,14 +99,14 @@ exports.getPendingOrders = async (req, res) => {
           'preparing',
           'ready',
           'out_for_delivery',
-          'delivered',
-          'returned',
+          'delivered',      // ✅ takeaway: customer ko de diya, payment pending
+          'returned',       // delivery: wapas aa gaya, payment pending
         ],
       },
     })
-      .populate('waiterId', 'name')
+      .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId', 'name')
+      .populate('chefId',        'name')
       .populate('items.itemId')
       .sort({ createdAt: 1 });
 
