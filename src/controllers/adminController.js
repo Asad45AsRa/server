@@ -952,4 +952,45 @@ exports.getFinanceSummary = async (req, res) => {
   }
 };
 
+exports.getAdminExpenses = async (req, res) => {
+  try {
+    const { startDate, endDate, branchId } = req.query;
+ 
+    let query = {};
+ 
+    if (branchId) query.branchId = branchId;
+ 
+    if (startDate && endDate) {
+      const start = new Date(startDate); start.setHours(0, 0, 0, 0);
+      const end   = new Date(endDate);   end.setHours(23, 59, 59, 999);
+      query.date  = { $gte: start, $lte: end };
+    }
+ 
+    const expenses = await Expense.find(query)
+      .populate('addedBy', 'name')
+      .populate('branchId', 'name')
+      .sort({ date: -1 });
+ 
+    const total = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+ 
+    // Group by category for summary
+    const byCategory = expenses.reduce((acc, e) => {
+      const cat = e.category || 'Other';
+      acc[cat] = (acc[cat] || 0) + e.amount;
+      return acc;
+    }, {});
+ 
+    res.json({
+      success:    true,
+      expenses,
+      total,
+      byCategory,
+      count:      expenses.length,
+    });
+  } catch (error) {
+    console.error('getAdminExpenses Error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
