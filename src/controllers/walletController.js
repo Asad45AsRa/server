@@ -464,23 +464,26 @@ exports.getExpenseSummary = async (req, res) => {
 exports.getExpensesByDateTimeRange = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const { startDateTime, endDateTime } = req.query;
-
+    const { startDateTime, endDateTime, category, paymentMethod } = req.query;
+ 
     let query = { branchId };
-
+ 
     if (startDateTime && endDateTime) {
       query.date = {
         $gte: new Date(startDateTime),
         $lte: new Date(endDateTime),
       };
     }
-
+ 
+    if (category)      query.category      = category;
+    if (paymentMethod) query.paymentMethod = paymentMethod;
+ 
     const expenses = await Expense.find(query)
       .populate('addedBy', 'name')
       .sort({ date: -1 });
-
+ 
     const total = expenses.reduce((s, e) => s + e.amount, 0);
-
+ 
     res.json({ success: true, expenses, total, count: expenses.length });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
