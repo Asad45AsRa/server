@@ -32,10 +32,9 @@ exports.getMenu = async (req, res) => {
       validUntil: { $gte: new Date() },
     }).populate('products.productId', 'name image').lean();
 
-    // ✅ Keep discountedPrice visible for frontend
     const deals = rawDeals.map(d => ({
       ...d,
-      price:          d.discountedPrice || d.price,
+      price:           d.discountedPrice || d.price,
       discountedPrice: d.discountedPrice,
     }));
 
@@ -56,10 +55,7 @@ exports.getMenu = async (req, res) => {
         .filter(d => d.sizes.length > 0);
     } catch (e) {
       const invDrinks = await Inventory.find({
-        branchId,
-        category:     'cold_drinks',
-        isActive:     true,
-        currentStock: { $gt: 0 },
+        branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 },
       }).lean();
       coldDrinks = invDrinks;
     }
@@ -79,13 +75,23 @@ exports.getMenu = async (req, res) => {
 
 exports.createDeliveryOrder = async (req, res) => {
   try {
-    const { items, customerName, customerPhone, deliveryAddress, notes } = req.body;
+    const {
+      items, customerName, customerPhone,
+      deliveryAddress, notes,
+      orderType = 'delivery', // ✅ NEW: default 'delivery'
+    } = req.body;
 
-    if (!customerName || !customerPhone || !deliveryAddress) {
-      return res.status(400).json({ success: false, message: 'Customer name, phone, and delivery address are required' });
+    if (!customerName || !customerPhone) {
+      return res.status(400).json({ success: false, message: 'Customer name aur phone zaroori hain' });
     }
+
+    // ✅ Address sirf delivery ke liye required
+    if (orderType === 'delivery' && !deliveryAddress) {
+      return res.status(400).json({ success: false, message: 'Delivery address zaroori hai' });
+    }
+
     if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, message: 'Order must have at least one item' });
+      return res.status(400).json({ success: false, message: 'Kam se kam ek item hona chahiye' });
     }
 
     const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
@@ -104,8 +110,8 @@ exports.createDeliveryOrder = async (req, res) => {
             }
           }
         } catch (e) {
-          const coldDrink = await Inventory.findById(item.itemId);
-          if (!coldDrink || coldDrink.currentStock < item.quantity) {
+          const cd = await Inventory.findById(item.itemId);
+          if (!cd || cd.currentStock < item.quantity) {
             return res.status(400).json({ success: false, message: 'Insufficient stock for cold drink' });
           }
         }
@@ -113,18 +119,25 @@ exports.createDeliveryOrder = async (req, res) => {
     }
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
-    const estimatedTime = calculateTotalTime(processedItems) + 20;
+    const estimatedTime = calculateTotalTime(processedItems) + (orderType === 'takeaway' ? 10 : 20);
 
-    const order = await Order.create({
+    const orderData = {
       orderNumber:   generateOrderNumber(),
       branchId:      req.user.branchId,
-      orderType:     'delivery',
+      orderType,                            // ✅ 'delivery' or 'takeaway'
       items:         processedItems,
       subtotal, tax, total, estimatedTime,
       deliveryBoyId: req.user._id,
-      customerName, customerPhone, deliveryAddress, notes,
+      customerName, customerPhone, notes,
       status: 'pending',
-    });
+    };
+
+    // ✅ Address sirf delivery orders mein save karo
+    if (orderType === 'delivery' && deliveryAddress) {
+      orderData.deliveryAddress = deliveryAddress;
+    }
+
+    const order = await Order.create(orderData);
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name phone')
@@ -133,7 +146,9 @@ exports.createDeliveryOrder = async (req, res) => {
     res.status(201).json({
       success: true,
       order:   populatedOrder,
-      message: 'Delivery order created successfully',
+      message: orderType === 'takeaway'
+        ? 'Takeaway order kitchen mein bhej diya!'
+        : 'Delivery order create ho gaya!',
     });
   } catch (error) {
     console.error('Create delivery order error:', error);
@@ -242,7 +257,7 @@ exports.updateOrderStatus = async (req, res) => {
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
     if (String(order.deliveryBoyId) !== String(req.user._id)) {
-      return res.status(403).json({ success: false, message: 'Not authorized to update this order' });
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
     order.status = status;
@@ -252,6 +267,10 @@ exports.updateOrderStatus = async (req, res) => {
     }
     if (status === 'delivered') {
       order.deliveredAt = new Date();
+    }
+    // ✅ NEW: takeaway direct complete
+    if (status === 'completed') {
+      order.completedAt = new Date();
     }
 
     await order.save();
@@ -266,6 +285,7 @@ exports.updateOrderStatus = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // ========== COMPLETE DELIVERY — delivery boy returns ==========
 // ✅ No meter — only cashReceived required
@@ -429,7 +449,7 @@ exports.getDeliveryHistory = async (req, res) => {
     })
       .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
-      .limit(100)
+      .limit(200)
       .lean();
 
     res.json({ success: true, orders, count: orders.length });
