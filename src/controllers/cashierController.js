@@ -104,9 +104,9 @@ exports.getPendingOrders = async (req, res) => {
         ],
       },
     })
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name')
+      .populate('chefId', 'name')
       .populate('items.itemId')
       .sort({ createdAt: 1 });
 
@@ -520,7 +520,7 @@ exports.getHourlyIncomeReport = async (req, res) => {
     const payments = await Payment.find({
       branchId,
       paidAt: { $gte: startOfDay, $lte: endOfDay },
-      status: { $ne: 'advance' },
+      status: 'paid',
     }).populate('orderId', 'orderType orderNumber');
 
     const hourlyData = {};
@@ -573,13 +573,13 @@ exports.getCashierShiftReport = async (req, res) => {
     }
 
     const start = new Date(startDateTime);
-    const end   = new Date(endDateTime);
+    const end = new Date(endDateTime);
 
     // ── Payments in range ──
     const payments = await Payment.find({
       branchId,
       paidAt: { $gte: start, $lte: end },
-      status: { $ne: 'advance' },
+      status: 'paid',               // ← only fully completed payments
     })
       .populate('cashierId', 'name')
       .populate('orderId', 'orderNumber orderType');
@@ -591,12 +591,12 @@ exports.getCashierShiftReport = async (req, res) => {
     }).populate('addedBy', 'name');
 
     // ── Revenue summary ──
-    const totalRevenue    = payments.reduce((s, p) => s + p.amount, 0);
-    const cashReceived    = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
-    const cardReceived    = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
-    const onlineReceived  = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
-    const jazzReceived    = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
-    const easyReceived    = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
+    const totalRevenue = payments.reduce((s, p) => s + p.amount, 0);
+    const cashReceived = payments.filter(p => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
+    const cardReceived = payments.filter(p => p.method === 'card').reduce((s, p) => s + p.amount, 0);
+    const onlineReceived = payments.filter(p => p.method === 'online').reduce((s, p) => s + p.amount, 0);
+    const jazzReceived = payments.filter(p => p.method === 'jazz_cash').reduce((s, p) => s + p.amount, 0);
+    const easyReceived = payments.filter(p => p.method === 'easypaisa').reduce((s, p) => s + p.amount, 0);
 
     // ── Expense summary ──
     const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
@@ -616,7 +616,7 @@ exports.getCashierShiftReport = async (req, res) => {
       payments,
       expenses,
       summary: {
-        totalOrders:       payments.length,
+        totalOrders: payments.length,
         totalRevenue,
         cashReceived,
         cardReceived,
@@ -954,15 +954,15 @@ exports.getAmountSummary = async (req, res) => {
         .reduce((s, p) => s + p.amount, 0);
     }
 
-    const totalRevenue     = payments.reduce((s, p) => s + p.amount, 0);
+    const totalRevenue = payments.reduce((s, p) => s + p.amount, 0);
     const totalTransactions = payments.length;
-    const recentPayments   = payments.slice(0, 10);
+    const recentPayments = payments.slice(0, 10);
 
     res.json({
       success: true,
       period: {
         start: sessionStart.toISOString(),
-        end:   sessionEnd.toISOString(),
+        end: sessionEnd.toISOString(),
       },
       summary: {
         totalRevenue,
@@ -998,14 +998,14 @@ exports.addMissedOrderPayment = async (req, res) => {
     const payment = await Payment.create({
       orderId,
       branchId,
-      amount:        Number(amount),
-      method:        method || 'cash',
-      status:        'paid',
-      cashierId:     req.user._id,
+      amount: Number(amount),
+      method: method || 'cash',
+      status: 'paid',
+      cashierId: req.user._id,
       receivedAmount: Number(amount),
-      changeAmount:  0,
-      notes:         notes || `Missed payment manually added for ${orderNumber || order.orderNumber}`,
-      paidAt:        new Date(),
+      changeAmount: 0,
+      notes: notes || `Missed payment manually added for ${orderNumber || order.orderNumber}`,
+      paidAt: new Date(),
     });
 
     const populated = await Payment.findById(payment._id)
@@ -1038,20 +1038,20 @@ exports.addManualPayment = async (req, res) => {
     const payment = await Payment.create({
       // orderId intentionally omitted (make it optional in schema)
       branchId,
-      amount:        Number(amount),
-      method:        method || 'cash',
-      status:        'paid',
-      cashierId:     req.user._id,
+      amount: Number(amount),
+      method: method || 'cash',
+      status: 'paid',
+      cashierId: req.user._id,
       receivedAmount: Number(amount),
-      changeAmount:  0,
+      changeAmount: 0,
       transactionId: transactionId || '',
-      notes:         [
+      notes: [
         description,
         receivedFrom ? `From: ${receivedFrom}` : '',
         notes || '',
       ].filter(Boolean).join(' | '),
-      isManual:      true,   // flag for UI distinction
-      paidAt:        new Date(),
+      isManual: true,   // flag for UI distinction
+      paidAt: new Date(),
     });
 
     const populated = await Payment.findById(payment._id)
