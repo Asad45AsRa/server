@@ -39,5 +39,11 @@ router.get('/cold-drinks/mobile', coldDrinkCtrl.getColdDrinksForMobile);
 // PUT /api/barman/cold-drinks/:id/sizes/:sizeId/restock
 // body: { quantity, purchasePrice?, expiryDate? }
 router.put('/cold-drinks/:id/sizes/:sizeId/restock', coldDrinkCtrl.restockSize);
+
+router.get('/my-stock',       ctrl.getBarmanIssuedStock);
+
+// ── Request cold drinks from IO ───────────────────────────────────────────────
+router.post('/request-stock', ctrl.requestColdDrinks);
+
  
 module.exports = router;

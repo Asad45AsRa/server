@@ -1,5 +1,7 @@
 const Order    = require('../models/Order');
 const ColdDrink = require('../models/Colddrink');
+const BarmanInventory         = require('../models/BarmanInventory');
+const BarmanColdDrinkRequest  = require('../models/BarmanColdDrinkRequest');
  
 // ── HELPER: item cold drink hai? ─────────────────────────────────────────────
 const isColdDrinkItem = (item) =>
@@ -305,5 +307,190 @@ exports.getOrderById = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+const getTodayRange = () => {
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+  return { today, tomorrow };
+};
+
+// ══ NEW: Get barman's issued stock for today ═══════════════════════════════════
+exports.getBarmanIssuedStock = async (req, res) => {
+  try {
+    const { today, tomorrow } = getTodayRange();
+
+    const record = await BarmanInventory.findOne({
+      barmanId: req.user._id,
+      status:   { $in: ['active', 'partial_return'] },
+      date:     { $gte: today, $lt: tomorrow },
+    });
+
+    res.json({ success: true, issuedStock: record || null });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ══ NEW: Barman requests cold drinks from IO ═══════════════════════════════════
+exports.requestColdDrinks = async (req, res) => {
+  try {
+    const { items, notes } = req.body;
+
+    if (!items || items.length === 0)
+      return res.status(400).json({ success: false, message: 'Items zaroori hain' });
+
+    const request = await BarmanColdDrinkRequest.create({
+      barmanId: req.user._id,
+      branchId: req.user.branchId,
+      items,
+      notes,
+    });
+
+    res.status(201).json({
+      success: true,
+      request,
+      message: 'Request inventory officer ko bhej di gayi',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ══ UPDATED: deliverColdDrinks — checks BarmanInventory instead of ColdDrink ══
+exports.deliverColdDrinks = async (req, res) => {
+  try {
+    const { orderId } = req.body;
+
+    if (!orderId)
+      return res.status(400).json({ success: false, message: 'orderId zaroori hai' });
+
+    const order = await Order.findById(orderId).populate('items.itemId');
+    if (!order)
+      return res.status(404).json({ success: false, message: 'Order nahi mili' });
+    if (String(order.branchId) !== String(req.user.branchId))
+      return res.status(403).json({ success: false, message: 'Yeh aapki branch ki order nahi' });
+    if (!order.hasColdDrinks)
+      return res.status(400).json({ success: false, message: 'Is order mein cold drinks nahi hain' });
+    if (order.coldDrinksStatus === 'delivered')
+      return res.status(400).json({ success: false, message: 'Cold drinks pehle hi deliver ho chuki hain' });
+    if (['completed', 'cancelled'].includes(order.status))
+      return res.status(400).json({ success: false, message: `Order already ${order.status} hai` });
+
+    // ── 1. Barman ki issued stock check karo ─────────────────────────────────
+    const { today, tomorrow } = getTodayRange();
+    const issuedRecord = await BarmanInventory.findOne({
+      barmanId: req.user._id,
+      status:   { $in: ['active', 'partial_return'] },
+      date:     { $gte: today, $lt: tomorrow },
+    });
+
+    if (!issuedRecord) {
+      return res.status(400).json({
+        success: false,
+        noStock: true,
+        message: 'Aapke paas aaj koi issued cold drinks nahi hain. Inventory officer se request karein.',
+      });
+    }
+
+    const coldDrinkItems = order.items.filter(isColdDrinkItem);
+
+    // ── 2. Har item ke liye stock check ──────────────────────────────────────
+    for (const item of coldDrinkItems) {
+      if (!item.coldDrinkId || !item.coldDrinkSizeId) continue; // backward compat
+
+      const issuedItem = issuedRecord.items.find(
+        i => String(i.coldDrinkId)     === String(item.coldDrinkId) &&
+             String(i.coldDrinkSizeId) === String(item.coldDrinkSizeId)
+      );
+
+      if (!issuedItem) {
+        return res.status(400).json({
+          success: false,
+          noStock: true,
+          message: `${item.name}${item.size ? ` (${item.size})` : ''} aapki issued stock mein nahi hai. IO se issue karwayein.`,
+        });
+      }
+
+      const available = issuedItem.issuedQuantity - issuedItem.deliveredQuantity - issuedItem.returnedQuantity;
+      if (available < (item.quantity || 1)) {
+        return res.status(400).json({
+          success: false,
+          noStock: true,
+          message: `${item.name}${item.size ? ` (${item.size})` : ''} ka stock kam hai. Available: ${available}, Chahiye: ${item.quantity || 1}`,
+        });
+      }
+    }
+
+    // ── 3. BarmanInventory se deduct karo ─────────────────────────────────────
+    const deliveredColdDrinkItems = [];
+
+    for (const item of coldDrinkItems) {
+      deliveredColdDrinkItems.push({
+        name:     item.name     || 'Cold Drink',
+        size:     item.size     || null,
+        quantity: item.quantity || 1,
+      });
+
+      if (!item.coldDrinkId || !item.coldDrinkSizeId) continue;
+
+      const issuedItem = issuedRecord.items.find(
+        i => String(i.coldDrinkId)     === String(item.coldDrinkId) &&
+             String(i.coldDrinkSizeId) === String(item.coldDrinkSizeId)
+      );
+      if (issuedItem) {
+        issuedItem.deliveredQuantity += (item.quantity || 1);
+      }
+    }
+
+    await issuedRecord.save();
+
+    // ── 4. Order update karo ─────────────────────────────────────────────────
+    order.coldDrinksStatus      = 'delivered';
+    order.barmanId              = req.user._id;
+    order.coldDrinksDeliveredAt = new Date();
+
+    const foodExists = orderHasFoodItems(order);
+    if (!foodExists) {
+      order.status      = 'delivered';
+      order.deliveredAt = new Date();
+    }
+
+    await order.save();
+
+    // ── 5. Socket emit ────────────────────────────────────────────────────────
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${String(order.branchId)}`).emit('cold-drinks-delivered', {
+        orderId:               String(order._id),
+        orderNumber:           order.orderNumber,
+        orderType:             order.orderType,
+        tableNumber:           order.tableNumber  || null,
+        floor:                 order.floor        || null,
+        barmanId:              String(req.user._id),
+        barmanName:            req.user.name      || 'Barman',
+        coldDrinksDeliveredAt: order.coldDrinksDeliveredAt,
+        newOrderStatus:        order.status,
+        coldDrinkItems:        deliveredColdDrinkItems,
+        message: `🧃 Cold drinks delivered for #${order.orderNumber} by ${req.user.name}`,
+      });
+    }
+
+    const populated = await Order.findById(order._id)
+      .populate('waiterId',      'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('barmanId',      'name')
+      .populate('items.itemId');
+
+    res.json({
+      success: true,
+      order:   populated,
+      message: `✅ Cold drinks deliver ho gayi order #${order.orderNumber} ke liye`,
+    });
+  } catch (error) {
+    console.error('deliverColdDrinks error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
  
 module.exports = exports;

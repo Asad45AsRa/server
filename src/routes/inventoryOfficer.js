@@ -31,6 +31,8 @@ const {
   getPendingReturnRequests,
   approveReturnRequest,
   rejectReturnRequest,
+  issueColdDrinksToBarman,
+  getBarmanStockRequests,
 } = require('../controllers/inventoryOfficerController');
 
 router.use(protect);
@@ -84,5 +86,8 @@ router.get('/reports/cost-analysis', getCostAnalysis);
 router.get('/return-requests', getPendingReturnRequests);
 router.put('/return-requests/:id/approve', approveReturnRequest);
 router.put('/return-requests/:id/reject', rejectReturnRequest);
+
+router.post('/issue-cold-drinks-to-barman', issueColdDrinksToBarman);
+router.get('/barman-stock-requests',        getBarmanStockRequests);
 
 module.exports = router;

@@ -997,4 +997,126 @@ exports.rejectReturnRequest = async (req, res) => {
   }
 };
 
+exports.issueColdDrinksToBarman = async (req, res) => {
+  try {
+    const ColdDrink      = require('../models/Colddrink');
+    const BarmanInventory = require('../models/BarmanInventory');
+
+    const { barmanId, items, notes, requestId } = req.body;
+
+    if (!barmanId || !items || items.length === 0)
+      return res.status(400).json({ success: false, message: 'barmanId aur items zaroori hain' });
+
+    const issuedItems = [];
+
+    for (const item of items) {
+      const drink = await ColdDrink.findById(item.coldDrinkId);
+      if (!drink)
+        return res.status(404).json({ success: false, message: `Cold drink ${item.coldDrinkId} nahi mili` });
+
+      const sizeVariant = drink.sizes.id(item.coldDrinkSizeId);
+      if (!sizeVariant)
+        return res.status(404).json({ success: false, message: `Size ${item.coldDrinkSizeId} nahi mila` });
+
+      if (sizeVariant.currentStock < item.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `${drink.name} (${sizeVariant.size}) ka stock kam hai. Available: ${sizeVariant.currentStock}, Requested: ${item.quantity}`,
+        });
+      }
+
+      // ColdDrink stock se deduct
+      sizeVariant.currentStock -= item.quantity;
+      await drink.save();
+
+      issuedItems.push({
+        coldDrinkId:      drink._id,
+        coldDrinkSizeId:  sizeVariant._id,
+        name:             drink.name,
+        size:             sizeVariant.size,
+        company:          drink.company,
+        issuedQuantity:   item.quantity,
+        deliveredQuantity:0,
+        returnedQuantity: 0,
+      });
+    }
+
+    // BarmanInventory create ya update karo (aaj ka record)
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+    let barmanRecord = await BarmanInventory.findOne({
+      barmanId,
+      status: 'active',
+      date:   { $gte: today, $lt: tomorrow },
+    });
+
+    if (barmanRecord) {
+      for (const newItem of issuedItems) {
+        const existing = barmanRecord.items.find(
+          i => String(i.coldDrinkId)     === String(newItem.coldDrinkId) &&
+               String(i.coldDrinkSizeId) === String(newItem.coldDrinkSizeId)
+        );
+        if (existing) {
+          existing.issuedQuantity += newItem.issuedQuantity;
+        } else {
+          barmanRecord.items.push(newItem);
+        }
+      }
+      await barmanRecord.save();
+    } else {
+      barmanRecord = await BarmanInventory.create({
+        barmanId,
+        branchId: req.user.branchId,
+        issuedBy: req.user._id,
+        items:    issuedItems,
+        notes,
+      });
+    }
+
+    // Request mark as issued (agar requestId mila)
+    if (requestId) {
+      try {
+        const BarmanColdDrinkRequest = require('../models/BarmanColdDrinkRequest');
+        await BarmanColdDrinkRequest.findByIdAndUpdate(requestId, {
+          status:   'issued',
+          issuedBy: req.user._id,
+          issuedAt: new Date(),
+        });
+      } catch (e) {
+        console.warn('[IO] Barman request update error (non-fatal):', e.message);
+      }
+    }
+
+    res.status(201).json({
+      success:         true,
+      barmanInventory: barmanRecord,
+      message:         'Cold drinks barman ko issue ho gayi',
+    });
+  } catch (error) {
+    console.error('issueColdDrinksToBarman error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ══ NEW: Get Barman Stock Requests (for IO panel) ═════════════════════════════
+exports.getBarmanStockRequests = async (req, res) => {
+  try {
+    const BarmanColdDrinkRequest = require('../models/BarmanColdDrinkRequest');
+    const { status } = req.query;
+
+    const query = { branchId: req.user.branchId };
+    if (status) query.status = status;
+
+    const requests = await BarmanColdDrinkRequest.find(query)
+      .populate('barmanId', 'name')
+      .populate('issuedBy', 'name')
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, requests, count: requests.length });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
