@@ -941,7 +941,7 @@ exports.getAmountSummary = async (req, res) => {
     const payments = await Payment.find({
       branchId,
       paidAt: { $gte: sessionStart, $lte: sessionEnd },
-      status: { $ne: 'advance' },
+      status: 'paid',
     })
       .populate('orderId', 'orderNumber orderType')
       .sort({ paidAt: -1 });
