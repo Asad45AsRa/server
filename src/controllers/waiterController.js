@@ -254,6 +254,11 @@ exports.createOrder = async (req, res) => {
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems);
 
+    // ✅ ADDED: Detect cold drinks
+    const hasColdDrinksInOrder = processedItems.some(
+      item => item.isColdDrink || item.type === 'cold_drink'
+    );
+
     let finalCashierNote = cashierNote || '';
     if (!finalCashierNote) {
       if (orderType === 'dine_in') {
@@ -280,6 +285,9 @@ exports.createOrder = async (req, res) => {
       status: 'pending',
       updatedByWaiter: false,
       stockDeducted: false,
+      // ✅ ADDED: Cold drinks flags
+      hasColdDrinks: hasColdDrinksInOrder,
+      coldDrinksStatus: hasColdDrinksInOrder ? 'pending' : 'delivered',
     };
 
     if (orderType === 'dine_in') {
@@ -335,9 +343,9 @@ exports.createOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name phone')
       .populate('items.itemId', 'name');
 
-    if (orderType === 'delivery' && deliveryBoyId) {
-      const io = req.app.get('io');
-      if (io) {
+    const io = req.app.get('io');
+    if (io) {
+      if (orderType === 'delivery' && deliveryBoyId) {
         io.to(`branch-${req.user.branchId}`).emit('delivery-assigned', {
           orderId: String(populatedOrder._id),
           orderNumber: populatedOrder.orderNumber,
@@ -346,6 +354,26 @@ exports.createOrder = async (req, res) => {
           total,
           deliveryBoyId: String(deliveryBoyId),
           assignedBy: req.user.name || 'Waiter',
+        });
+      }
+
+      // ✅ ADDED: Barman ko notify karo agar cold drinks hain
+      if (hasColdDrinksInOrder) {
+        io.to(`branch-${String(req.user.branchId)}`).emit('new-colddrink-order', {
+          orderId: String(order._id),
+          orderNumber: order.orderNumber,
+          orderType: order.orderType,
+          tableNumber: order.tableNumber || null,
+          floor: order.floor || null,
+          total: order.total,
+          coldDrinkItems: processedItems
+            .filter(i => i.isColdDrink || i.type === 'cold_drink')
+            .map(i => ({
+              name: i.name,
+              size: i.size || null,
+              quantity: i.quantity,
+            })),
+          message: `🧃 New cold drink order #${order.orderNumber}`,
         });
       }
     }

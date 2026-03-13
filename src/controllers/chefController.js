@@ -45,11 +45,25 @@ const getTodayRange = () => {
 exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const orders = await Order.find({ branchId, status: 'pending' })
+ 
+    // ✅ CHANGED: Chef sirf woh orders dekhe jin mein kam se kam ek food item ho
+    // Cold-drink-only orders barman handle karta hai, chef nahi
+    const orders = await Order.find({
+      branchId,
+      status: 'pending',
+      // Ensure at least one non-cold-drink item exists in the order
+      items: {
+        $elemMatch: {
+          isColdDrink: { $ne: true },
+          type:        { $ne: 'cold_drink' },
+        },
+      },
+    })
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .sort({ createdAt: 1 })
       .lean();
+ 
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
     console.error('getPendingOrders error:', error);
@@ -142,61 +156,52 @@ exports.acceptOrder = async (req, res) => {
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { orderId, status, additionalDelay } = req.body;
-    const ColdDrink = require('../models/Colddrink');
-
+    // NOTE: ColdDrink require HATA diya — chef cold drinks deduct nahi karta ab
+    // const ColdDrink = require('../models/Colddrink'); // ← YEH LINE HATAO
+ 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
+ 
     if (order.chefId && order.chefId.toString() !== req.user._id.toString())
       return res.status(403).json({ success: false, message: 'Not authorized' });
-
+ 
     order.status = status;
-
+ 
     if (additionalDelay && parseInt(additionalDelay) > 0)
       order.additionalDelay = (order.additionalDelay || 0) + parseInt(additionalDelay);
-
+ 
     if (status === 'preparing') order.preparingAt = new Date();
-
+ 
     // ════════════════════════════════════════════════════════
-    //  READY → DEDUCT STOCK + BROADCAST
+    //  READY → DEDUCT FOOD INGREDIENTS ONLY + BROADCAST
+    //  ✅ CHANGED: Cold drink deduction HATA diya
+    //  Barman cold drinks deduct karta hai apne deliverColdDrinks action mein
     // ════════════════════════════════════════════════════════
     if (status === 'ready' && !order.stockDeducted) {
       order.readyAt = new Date();
-
+ 
       const { today, tomorrow } = getTodayRange();
       const chefRecord = await ChefInventory.findOne({
         chefId: req.user._id,
         status: 'active',
         date: { $gte: today, $lt: tomorrow },
       });
-
+ 
       let chefRecordDirty = false;
-
+ 
       for (const item of order.items) {
         const orderQty = item.quantity || 1;
-
-        // ── COLD DRINK ──────────────────────────────────────────────────────
-        if (item.isColdDrink && item.coldDrinkId && item.coldDrinkSizeId) {
-          try {
-            const drink = await ColdDrink.findById(item.coldDrinkId);
-            if (drink) {
-              const variant = drink.sizes.id(item.coldDrinkSizeId);
-              if (variant) {
-                variant.currentStock = Math.max(0, variant.currentStock - orderQty);
-                await drink.save();
-                console.log(`[ColdDrink] Deducted: ${drink.name} ${variant.size} -${orderQty}`);
-              }
-            }
-          } catch (e) {
-            console.error('[ColdDrink] Deduct error:', e.message);
-          }
+ 
+        // ✅ CHANGED: Cold drink items SKIP karo — barman handle karta hai
+        if (item.isColdDrink || item.type === 'cold_drink') {
+          console.log(`[Chef] Skipping cold drink item: ${item.name} — barman will handle`);
           continue;
         }
-
+ 
         // ── PRODUCT INGREDIENTS ─────────────────────────────────────────────
         const Product = require('../models/Product');
         let ingredients = [];
-
+ 
         try {
           const product = await Product.findById(item.itemId).lean();
           if (product) {
@@ -208,35 +213,35 @@ exports.updateOrderStatus = async (req, res) => {
         } catch (e) {
           console.error('[Ingredients] Product fetch error:', e.message);
         }
-
+ 
         if (ingredients.length === 0) continue;
-
+ 
         for (const ing of ingredients) {
           if (!ing.inventoryItemId || !ing.quantity) continue;
-
+ 
           try {
             const invItem = await Inventory.findById(ing.inventoryItemId).lean();
             if (!invItem) {
               console.warn(`[Ingredients] Inventory item not found: ${ing.inventoryItemId}`);
               continue;
             }
-
+ 
             const ingredientQtyInInventoryUnit = convertToInventoryUnit(
               ing.quantity * orderQty,
               ing.unit || invItem.unit,
               invItem.unit
             );
-
+ 
             console.log(
               `[Ingredients] ${invItem.name}: ${ing.quantity * orderQty} ${ing.unit || invItem.unit}` +
               ` → ${ingredientQtyInInventoryUnit.toFixed(4)} ${invItem.unit}`
             );
-
+ 
             if (chefRecord) {
               const chefItem = chefRecord.items.find(
                 ci => ci.inventoryItemId.toString() === ing.inventoryItemId.toString()
               );
-
+ 
               if (chefItem) {
                 const remaining    = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
                 const actualDeduct = Math.min(ingredientQtyInInventoryUnit, Math.max(remaining, 0));
@@ -264,7 +269,7 @@ exports.updateOrderStatus = async (req, res) => {
           }
         }
       }
-
+ 
       if (chefRecord && chefRecordDirty) {
         try {
           await chefRecord.save();
@@ -273,9 +278,9 @@ exports.updateOrderStatus = async (req, res) => {
           console.error('[ChefInventory] Save error:', e.message);
         }
       }
-
+ 
       order.stockDeducted = true;
-
+ 
       // ── BROADCAST: Delivery order ready + no delivery boy ────────────────
       if (order.orderType === 'delivery' && !order.deliveryBoyId) {
         try {
@@ -286,7 +291,7 @@ exports.updateOrderStatus = async (req, res) => {
               .populate('waiterId',     'name')
               .populate('items.itemId', 'name')
               .lean();
-
+ 
             io.to(`branch-${branchIdStr}`).emit('new-unassigned-delivery', {
               orderId:         String(order._id),
               orderNumber:     order.orderNumber,
@@ -303,7 +308,7 @@ exports.updateOrderStatus = async (req, res) => {
               readyAt:  new Date(),
               branchId: branchIdStr,
             });
-
+ 
             console.log(
               `[Chef→Broadcast] ✅ Delivery order ${order.orderNumber} READY → unassigned → broadcast to branch-${branchIdStr}`
             );
@@ -313,18 +318,18 @@ exports.updateOrderStatus = async (req, res) => {
         }
       }
     }
-
+ 
     await order.save();
-
+ 
     const notifyId = order.waiterId || order.deliveryBoyId;
     if (notifyId)
       await notificationService.sendOrderNotification(notifyId, order.orderNumber, status);
-
+ 
     const populated = await Order.findById(order._id)
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .populate('chefId',        'name');
-
+ 
     res.json({ success: true, order: populated, message: `Order updated to ${status}` });
   } catch (error) {
     console.error('updateOrderStatus error:', error);

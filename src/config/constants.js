@@ -6,7 +6,8 @@ const UserRole = {
   CHEF: 'chef',
   WAITER: 'waiter',
   DELIVERY: 'delivery',
-  INVENTORY_OFFICER: 'inventory_officer'
+  INVENTORY_OFFICER: 'inventory_officer',
+  BARMAN: 'barman',
 };
 
 const OrderStatus = {

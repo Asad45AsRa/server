@@ -5,6 +5,7 @@ const { checkRole }  = require('../middlewares/roleCheck');
 const { UserRole }   = require('../config/constants');
 const ctrl = require('../controllers/Colddrinkcontroller');
 
+
 router.use(protect);
 
 // ── READ: Saray authenticated users cold drinks dekh sakte hain ───────────
@@ -24,5 +25,6 @@ router.post('/:id/sizes',                checkRole(UserRole.ADMIN, 'inventory_of
 router.put('/:id/sizes/:sizeId',         checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.updateSize);
 router.put('/:id/sizes/:sizeId/restock', checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.restockSize);
 router.delete('/:id/sizes/:sizeId',      checkRole(UserRole.ADMIN, 'inventory_officer'), ctrl.deleteSize);
+router.put('/:id/sizes/:sizeId/restock', checkRole(UserRole.ADMIN, 'inventory_officer', 'barman'), ctrl.restockSize);
 
 module.exports = router;

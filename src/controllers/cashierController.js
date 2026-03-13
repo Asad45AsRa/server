@@ -99,14 +99,16 @@ exports.getPendingOrders = async (req, res) => {
           'preparing',
           'ready',
           'out_for_delivery',
-          'delivered',      // ✅ takeaway: customer ko de diya, payment pending
-          'returned',       // delivery: wapas aa gaya, payment pending
+          'delivered',
+          'returned',
         ],
       },
     })
       .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .populate('chefId', 'name')
+      // ✅ ADDED: barmanId populate so cashier knows who delivered cold drinks
+      .populate('barmanId', 'name')
       .populate('items.itemId')
       .sort({ createdAt: 1 });
 
@@ -364,6 +366,17 @@ exports.receivePayment = async (req, res) => {
       .populate('items.itemId');
 
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // ✅ ADDED: Cold drinks validation
+    // Agar order mein cold drinks hain aur barman ne deliver nahi ki toh payment rok do
+    if (order.hasColdDrinks && order.coldDrinksStatus !== 'delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cold drinks abhi barman ne deliver nahi ki hain. Pehle barman se confirm karein.',
+        coldDrinksStatus: order.coldDrinksStatus,
+        hasColdDrinks: true,
+      });
+    }
 
     const advance = Number(order.advancePaid || 0);
     const orderTotal = Number(order.total || 0);
@@ -877,11 +890,20 @@ exports.createOrder = async (req, res) => {
 
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await Order.countDocuments({ branchId, createdAt: { $gte: new Date(today.setHours(0, 0, 0, 0)) } });
+    const count = await Order.countDocuments({
+      branchId,
+      createdAt: { $gte: new Date(today.setHours(0, 0, 0, 0)) },
+    });
     const orderNumber = `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
 
+    // ✅ ADDED: Detect cold drinks in order
+    const hasColdDrinksInOrder = processedItems.some(
+      item => item.isColdDrink || item.type === 'cold_drink'
+    );
+
     const order = await Order.create({
-      orderNumber, branchId,
+      orderNumber,
+      branchId,
       orderType: orderType || 'dine_in',
       tableNumber: tableNumber || null,
       floor: floor || null,
@@ -891,9 +913,15 @@ exports.createOrder = async (req, res) => {
       cashierNote: cashierNote || '',
       notes: notes || '',
       items: processedItems,
-      subtotal, discount: discountAmt, total, tax: 0,
+      subtotal,
+      discount: discountAmt,
+      total,
+      tax: 0,
       status: 'pending',
       cashierId: req.user._id,
+      // ✅ ADDED: Cold drinks flags
+      hasColdDrinks: hasColdDrinksInOrder,
+      coldDrinksStatus: hasColdDrinksInOrder ? 'pending' : 'delivered',
     });
 
     if (orderType === 'dine_in' && tableNumber && floor) {
@@ -911,6 +939,7 @@ exports.createOrder = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
+      // ✅ Existing: chef ke liye new-order event
       io.to(String(branchId)).emit('new-order', {
         orderId: order._id,
         orderNumber: order.orderNumber,
@@ -920,6 +949,26 @@ exports.createOrder = async (req, res) => {
         total: order.total,
         itemCount: processedItems.length,
       });
+
+      // ✅ ADDED: Agar cold drinks hain toh barman ko bhi notify karo
+      if (hasColdDrinksInOrder) {
+        io.to(String(branchId)).emit('new-colddrink-order', {
+          orderId: String(order._id),
+          orderNumber: order.orderNumber,
+          orderType: order.orderType,
+          tableNumber: order.tableNumber || null,
+          floor: order.floor || null,
+          total: order.total,
+          coldDrinkItems: processedItems
+            .filter(i => i.isColdDrink || i.type === 'cold_drink')
+            .map(i => ({
+              name: i.name,
+              size: i.size,
+              quantity: i.quantity,
+            })),
+          message: `🧃 New cold drink order #${order.orderNumber}`,
+        });
+      }
     }
 
     res.status(201).json({

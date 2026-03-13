@@ -14,6 +14,7 @@ const deliveryRoutes        = require('./routes/delivery');
 const inventoryRoutes       = require('./routes/inventory');
 const inventoryOfficerRoutes = require('./routes/inventoryOfficer');
 const coldDrinkRoutes       = require('./routes/Colddrink');
+const barmanRoutes = require('./routes/barMan');
 
 const app = express();
 
@@ -64,6 +65,7 @@ app.use('/api/waiter',           waiterRoutes);
 app.use('/api/delivery',         deliveryRoutes);
 app.use('/api/inventory',        inventoryRoutes);
 app.use('/api/cold-drinks',      coldDrinkRoutes);
+app.use('/api/barman', barmanRoutes);
 
 // ✅ Test endpoint
 app.get('/api/test', (req, res) => {

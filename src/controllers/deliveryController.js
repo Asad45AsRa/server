@@ -1,7 +1,7 @@
 // controllers/deliveryController.js
-const Order     = require('../models/Order');
-const Product   = require('../models/Product');
-const Deal      = require('../models/Deal');
+const Order = require('../models/Order');
+const Product = require('../models/Product');
+const Deal = require('../models/Deal');
 const Inventory = require('../models/Inventory');
 const ColdDrink = require('../models/Colddrink');
 const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
@@ -10,7 +10,7 @@ const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require
 const resolveItemType = (item) => {
   if (item.itemType) return item.itemType;
   if (item.type === 'cold_drink') return 'Inventory';
-  if (item.type === 'deal')       return 'Deal';
+  if (item.type === 'deal') return 'Deal';
   return 'Product';
 };
 
@@ -20,7 +20,7 @@ const resolveItemType = (item) => {
 exports.getMenu = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const now      = new Date();
+    const now = new Date();
 
     const products = await Product.find({ branchId, isAvailable: true })
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
@@ -43,7 +43,7 @@ exports.getMenu = async (req, res) => {
 
     const deals = rawDeals.map(d => ({
       ...d,
-      price:           d.discountedPrice || d.price,
+      price: d.discountedPrice || d.price,
       discountedPrice: d.discountedPrice,
     }));
 
@@ -53,16 +53,16 @@ exports.getMenu = async (req, res) => {
       const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
       coldDrinks = rawColdDrinks
         .map(d => ({
-          _id:      d._id,
-          name:     d.name,
-          company:  d.company,
+          _id: d._id,
+          name: d.name,
+          company: d.company,
           category: 'cold_drinks',
-          sizes:    d.sizes
+          sizes: d.sizes
             .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
             .map(s => ({
-              _id:          s._id,
-              size:         s.size,
-              price:        s.salePrice,
+              _id: s._id,
+              size: s.size,
+              price: s.salePrice,
               currentStock: s.currentStock,
             })),
         }))
@@ -72,11 +72,11 @@ exports.getMenu = async (req, res) => {
         branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 },
       }).lean();
       coldDrinks = invDrinks.map(d => ({
-        _id:      d._id,
-        name:     d.name,
+        _id: d._id,
+        name: d.name,
         category: 'cold_drinks',
-        price:    d.salePrice || d.price,
-        salePrice:d.salePrice || d.price,
+        price: d.salePrice || d.price,
+        salePrice: d.salePrice || d.price,
       }));
     }
 
@@ -84,8 +84,8 @@ exports.getMenu = async (req, res) => {
 
     res.json({
       success: true,
-      menu:    { products, deals, coldDrinks },
-      counts:  { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length },
+      menu: { products, deals, coldDrinks },
+      counts: { products: products.length, deals: deals.length, coldDrinks: coldDrinks.length },
     });
   } catch (error) {
     console.error('Get delivery menu error:', error);
@@ -100,7 +100,7 @@ exports.createDeliveryOrder = async (req, res) => {
     const {
       items, customerName, customerPhone,
       deliveryAddress, notes,
-      orderType = 'delivery', // ✅ 'delivery' | 'takeaway'
+      orderType = 'delivery',
     } = req.body;
 
     if (!customerName || !customerPhone) {
@@ -116,7 +116,7 @@ exports.createDeliveryOrder = async (req, res) => {
     const resolveItemType = (item) => {
       if (item.itemType) return item.itemType;
       if (item.type === 'cold_drink') return 'Inventory';
-      if (item.type === 'deal')       return 'Deal';
+      if (item.type === 'deal') return 'Deal';
       return 'Product';
     };
 
@@ -139,15 +139,18 @@ exports.createDeliveryOrder = async (req, res) => {
               });
             }
           }
-        } catch {}
+        } catch { }
       }
     }
 
     const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
-    // Takeaway: +10 min, Delivery: +20 min
     const estimatedTime = calculateTotalTime(processedItems) + (orderType === 'takeaway' ? 10 : 20);
 
-    // Build cashierNote so cashier knows it's takeaway
+    // ✅ ADDED: Detect cold drinks
+    const hasColdDrinksInOrder = processedItems.some(
+      item => item.isColdDrink || item.type === 'cold_drink'
+    );
+
     let cashierNote = '';
     if (orderType === 'takeaway') {
       cashierNote = `🥡 Takeaway — ${customerName} | ${customerPhone}`;
@@ -156,16 +159,19 @@ exports.createDeliveryOrder = async (req, res) => {
     }
 
     const orderData = {
-      orderNumber:   generateOrderNumber(),
-      branchId:      req.user.branchId,
+      orderNumber: generateOrderNumber(),
+      branchId: req.user.branchId,
       orderType,
-      items:         processedItems,
+      items: processedItems,
       subtotal, tax, total, estimatedTime,
       deliveryBoyId: req.user._id,
       customerName, customerPhone,
       notes,
       cashierNote,
       status: 'pending',
+      // ✅ ADDED: Cold drinks flags
+      hasColdDrinks: hasColdDrinksInOrder,
+      coldDrinksStatus: hasColdDrinksInOrder ? 'pending' : 'delivered',
     };
 
     if (orderType === 'delivery' && deliveryAddress) {
@@ -178,9 +184,29 @@ exports.createDeliveryOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name phone')
       .populate('items.itemId', 'name');
 
+    // ✅ ADDED: Barman ko notify karo agar cold drinks hain
+    const io = req.app.get('io');
+    if (io && hasColdDrinksInOrder) {
+      io.to(`branch-${String(req.user.branchId)}`).emit('new-colddrink-order', {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        orderType: order.orderType,
+        total: order.total,
+        customerName,
+        coldDrinkItems: processedItems
+          .filter(i => i.isColdDrink || i.type === 'cold_drink')
+          .map(i => ({
+            name: i.name,
+            size: i.size || null,
+            quantity: i.quantity,
+          })),
+        message: `🧃 New cold drink order #${order.orderNumber}`,
+      });
+    }
+
     res.status(201).json({
       success: true,
-      order:   populatedOrder,
+      order: populatedOrder,
       message: orderType === 'takeaway'
         ? '🥡 Takeaway order kitchen mein bhej diya!'
         : '🚚 Delivery order create ho gaya!',
@@ -199,7 +225,7 @@ exports.getMyOrders = async (req, res) => {
       deliveryBoyId: req.user._id,
       status: { $nin: ['completed', 'cancelled'] },
     })
-      .populate('chefId',       'name')
+      .populate('chefId', 'name')
       .populate('items.itemId', 'name')
       .sort({ createdAt: -1 })
       .lean();
@@ -219,11 +245,11 @@ exports.getUnassignedOrders = async (req, res) => {
 
     const orders = await Order.find({
       branchId,
-      orderType:     'delivery',
-      status:        'ready',
+      orderType: 'delivery',
+      status: 'ready',
       deliveryBoyId: null,
     })
-      .populate('waiterId',     'name')
+      .populate('waiterId', 'name')
       .populate('items.itemId', 'name')
       .sort({ readyAt: 1 })
       .lean();
@@ -244,18 +270,18 @@ exports.claimOrder = async (req, res) => {
 
     const order = await Order.findOneAndUpdate(
       {
-        _id:           orderId,
-        orderType:     'delivery',
-        status:        'ready',
+        _id: orderId,
+        orderType: 'delivery',
+        status: 'ready',
         deliveryBoyId: null,
-        branchId:      req.user.branchId,
+        branchId: req.user.branchId,
       },
       { $set: { deliveryBoyId: req.user._id } },
       { new: true }
     )
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name phone')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     if (!order) {
       return res.status(409).json({
@@ -267,9 +293,9 @@ exports.claimOrder = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${req.user.branchId}`).emit('order-claimed', {
-        orderId:     String(order._id),
+        orderId: String(order._id),
         orderNumber: order.orderNumber,
-        claimedBy:   req.user.name || 'Delivery Boy',
+        claimedBy: req.user.name || 'Delivery Boy',
         claimedById: String(req.user._id),
       });
     }
@@ -305,8 +331,8 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     order.status = status;
-    if (status === 'out_for_delivery') order.departedAt  = new Date();
-    if (status === 'delivered')        order.deliveredAt = new Date();
+    if (status === 'out_for_delivery') order.departedAt = new Date();
+    if (status === 'delivered') order.deliveredAt = new Date();
 
     await order.save();
 
@@ -351,23 +377,23 @@ exports.completeDelivery = async (req, res) => {
       });
     }
 
-    order.status       = 'returned';
+    order.status = 'returned';
     order.cashReceived = parseFloat(cashReceived);
-    order.returnedAt   = new Date();
+    order.returnedAt = new Date();
 
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     res.json({
       success: true,
-      order:   populatedOrder,
+      order: populatedOrder,
       summary: {
         cashReceived: order.cashReceived,
-        orderTotal:   order.total,
-        change:       parseFloat(cashReceived) - order.total,
+        orderTotal: order.total,
+        change: parseFloat(cashReceived) - order.total,
       },
       message: '🏠 Wapas aa gaye! Cashier se payment verify karwaein — woh order complete karega.',
     });
@@ -385,7 +411,7 @@ exports.completeDelivery = async (req, res) => {
 exports.requestPrint = async (req, res) => {
   try {
     const orderId = req.params.id;
-    const order   = await Order.findById(orderId);
+    const order = await Order.findById(orderId);
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
@@ -405,9 +431,9 @@ exports.requestPrint = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${req.user.branchId}`).emit('print-request', {
-        orderId:     String(order._id),
+        orderId: String(order._id),
         orderNumber: order.orderNumber,
-        orderType:   'delivery',
+        orderType: 'delivery',
         requestedBy: req.user.name || 'Delivery Boy',
       });
     }
@@ -449,23 +475,23 @@ exports.updateOrder = async (req, res) => {
       }
       const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
       const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
-      order.items         = processedItems;
-      order.subtotal      = subtotal;
-      order.tax           = tax;
-      order.total         = total;
+      order.items = processedItems;
+      order.subtotal = subtotal;
+      order.tax = tax;
+      order.total = total;
       order.estimatedTime = calculateTotalTime(processedItems) + 20;
     }
 
-    if (customerName)        order.customerName    = customerName;
-    if (customerPhone)       order.customerPhone   = customerPhone;
-    if (deliveryAddress)     order.deliveryAddress = deliveryAddress;
-    if (notes !== undefined) order.notes           = notes;
+    if (customerName) order.customerName = customerName;
+    if (customerPhone) order.customerPhone = customerPhone;
+    if (deliveryAddress) order.deliveryAddress = deliveryAddress;
+    if (notes !== undefined) order.notes = notes;
 
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
-      .populate('items.itemId',  'name');
+      .populate('items.itemId', 'name');
 
     res.json({ success: true, order: populatedOrder, message: 'Order updated successfully' });
   } catch (error) {
@@ -498,7 +524,7 @@ exports.markDeliveredTakeaway = async (req, res) => {
   try {
     const orderId = req.params.id;
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId); createDeliveryOrder
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
@@ -524,7 +550,7 @@ exports.markDeliveredTakeaway = async (req, res) => {
       });
     }
 
-    order.status      = 'delivered';
+    order.status = 'delivered';
     order.deliveredAt = new Date();
     await order.save();
 
@@ -532,11 +558,11 @@ exports.markDeliveredTakeaway = async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${req.user.branchId}`).emit('order-updated', {
-        orderId:     String(order._id),
+        orderId: String(order._id),
         orderNumber: order.orderNumber,
-        newStatus:   'delivered',
-        orderType:   'takeaway',
-        message:     `🥡 Takeaway #${order.orderNumber} — Customer ko de diya. Payment pending.`,
+        newStatus: 'delivered',
+        orderType: 'takeaway',
+        message: `🥡 Takeaway #${order.orderNumber} — Customer ko de diya. Payment pending.`,
       });
     }
 
@@ -546,7 +572,7 @@ exports.markDeliveredTakeaway = async (req, res) => {
 
     res.json({
       success: true,
-      order:   populatedOrder,
+      order: populatedOrder,
       message: `✅ Order #${order.orderNumber} delivered! Cashier payment receive karega.`,
     });
   } catch (error) {
