@@ -1221,4 +1221,119 @@ exports.receiveBarmanReturn = async (req, res) => {
   }
 };
 
+exports.issueRequestCustomQty = async (req, res) => {
+  try {
+    const { requestId, items } = req.body;
+ 
+    const request = await InventoryRequest.findById(requestId)
+      .populate('items.inventoryItemId')
+      .populate('requestedBy', 'name role branchId');
+ 
+    if (!request)
+      return res.status(404).json({ success: false, message: 'Request not found' });
+ 
+    if (!['pending', 'approved'].includes(request.status))
+      return res.status(400).json({
+        success: false,
+        message: `Request status "${request.status}" — sirf pending ya approved requests issue ho sakti hain`,
+      });
+ 
+    const issuedTransactions   = [];
+    const issuedItemsForChef   = [];
+ 
+    for (const reqItem of items) {
+      if (!reqItem.inventoryItemId || reqItem.quantity <= 0) continue;
+ 
+      const invItem = await Inventory.findById(reqItem.inventoryItemId);
+      if (!invItem) continue;
+ 
+      const qtyToIssue = parseFloat(reqItem.quantity);
+ 
+      if (invItem.currentStock < qtyToIssue) {
+        return res.status(400).json({
+          success: false,
+          message: `${invItem.name} کا stock کم ہے — Available: ${invItem.currentStock} ${invItem.unit}, Requested: ${qtyToIssue}`,
+        });
+      }
+ 
+      const issueCost = qtyToIssue * (invItem.averageCost || invItem.pricePerUnit || 0);
+ 
+      const transaction = await InventoryTransaction.create({
+        itemId:      invItem._id,
+        type:        'issue',
+        quantity:    qtyToIssue,
+        unit:        invItem.unit,
+        pricePerUnit: invItem.averageCost || invItem.pricePerUnit || 0,
+        totalCost:   issueCost,
+        issuedTo:    request.requestedBy._id,
+        receivedBy:  req.user._id,
+        notes:       `Custom issue against request ID: ${request._id}`,
+        date:        new Date(),
+      });
+ 
+      invItem.currentStock    -= qtyToIssue;
+      invItem.totalIssueValue  = (invItem.totalIssueValue || 0) + issueCost;
+      invItem.stockHistory.push({ date: new Date(), quantity: qtyToIssue, type: 'out', transactionId: transaction._id });
+      await invItem.save();
+ 
+      issuedTransactions.push(transaction);
+      issuedItemsForChef.push({
+        inventoryItemId: invItem._id,
+        name:            invItem.name,
+        unit:            invItem.unit,
+        issuedQuantity:  qtyToIssue,
+        usedQuantity:    0,
+        returnedQuantity:0,
+      });
+    }
+ 
+    // Update ChefInventory so chef can see issued stock on mobile
+    const chefId   = request.requestedBy._id;
+    const branchId = request.requestedBy.branchId || req.user.branchId;
+ 
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+ 
+    let chefRecord = await ChefInventory.findOne({
+      chefId, status: 'active', date: { $gte: today, $lt: tomorrow },
+    });
+ 
+    if (chefRecord) {
+      for (const newItem of issuedItemsForChef) {
+        const existing = chefRecord.items.find(
+          i => i.inventoryItemId.toString() === newItem.inventoryItemId.toString()
+        );
+        if (existing) existing.issuedQuantity += newItem.issuedQuantity;
+        else chefRecord.items.push(newItem);
+      }
+      await chefRecord.save();
+    } else {
+      chefRecord = await ChefInventory.create({
+        chefId, branchId,
+        items:    issuedItemsForChef,
+        issuedBy: req.user._id,
+        notes:    `Custom issued via request ${request._id}`,
+        status:   'active',
+      });
+    }
+ 
+    // Mark request as issued
+    request.status     = 'issued';
+    request.issuedBy   = req.user._id;
+    request.issuedDate = new Date();
+    await request.save();
+ 
+    res.json({
+      success: true,
+      request,
+      issuedTransactions,
+      chefInventory: chefRecord,
+      message: 'Request issued with custom quantities successfully',
+    });
+  } catch (error) {
+    console.error('issueRequestCustomQty error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;

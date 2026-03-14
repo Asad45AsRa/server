@@ -36,6 +36,7 @@ const {
   rejectBarmanRequest,
   getBarmanInventoryRecords,
   receiveBarmanReturn,
+  issueRequestCustomQty,
 } = require('../controllers/inventoryOfficerController');
  
 router.use(protect);
@@ -91,7 +92,7 @@ router.put('/return-requests/:id/approve',  approveReturnRequest);
 router.put('/return-requests/:id/reject',   rejectReturnRequest);
  
 // ── Barman Cold Drink Issue ───────────────────────────────────────────────────
-router.post('/issue-cold-drinks-to-barman', issueColdDrinksToBarman);
+router.post('/issue-cold-drinks',           issueColdDrinksToBarman);
  
 // ── Barman Cold Drink Requests ────────────────────────────────────────────────
 router.get('/barman-requests',              getBarmanStockRequests);
@@ -100,5 +101,7 @@ router.put('/barman-requests/:id/reject',   rejectBarmanRequest);
 // ── Barman Inventory Records & Returns ───────────────────────────────────────
 router.get ('/barman-inventory',  getBarmanInventoryRecords);
 router.post('/barman-return',     receiveBarmanReturn);
+router.post('/issue-cold-drinks',           issueColdDrinksToBarman);
+router.post('/requests/issue-custom', issueRequestCustomQty);
  
 module.exports = router;
