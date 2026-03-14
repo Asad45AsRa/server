@@ -112,7 +112,7 @@ exports.createDeliveryOrder = async (req, res) => {
       }
     }
 
-    const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 5);
+    const { subtotal, tax, total } = calculateOrderTotal(processedItems, 0, 0);
     const estimatedTime = calculateTotalTime(processedItems) + (orderType === 'takeaway' ? 10 : 20);
 
     // ✅ ADDED: Detect cold drinks
@@ -447,7 +447,7 @@ exports.updateOrder = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Order must have at least one item' });
       }
       const processedItems = items.map(item => ({ ...item, itemType: resolveItemType(item) }));
-      const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 5);
+      const { subtotal, tax, total } = calculateOrderTotal(processedItems, order.discount, 0);
       order.items = processedItems;
       order.subtotal = subtotal;
       order.tax = tax;
