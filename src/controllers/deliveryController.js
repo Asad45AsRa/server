@@ -15,7 +15,6 @@ const resolveItemType = (item) => {
 };
 
 // ========== MENU ==========
-// ✅ FIX: Returns ALL products and ALL active deals so delivery screen shows them
 
 exports.getMenu = async (req, res) => {
   try {
