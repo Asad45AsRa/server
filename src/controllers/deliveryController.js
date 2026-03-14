@@ -20,57 +20,38 @@ exports.getMenu = async (req, res) => {
   try {
     const branchId = req.user.branchId;
     const now = new Date();
-
+ 
     const products = await Product.find({ branchId, isAvailable: true })
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
       .lean();
-
-    // ✅ FIX: Include deals with no date range OR valid date range
-    await Deal.find({ branchId, isActive: true })
+ 
+    // ✅ FIX: Waiter jaise sirf isActive check — koi date filter nahi
+    const rawDeals = await Deal.find({ branchId, isActive: true })
       .populate('products.productId', 'name image')
       .lean();
-
-    const deals = rawDeals.map(d => ({
-      ...d,
-      price: d.discountedPrice || d.price,
-      discountedPrice: d.discountedPrice,
-    }));
-
-    // ── Cold Drinks ──
-    let coldDrinks = [];
-    try {
-      const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
-      coldDrinks = rawColdDrinks
-        .map(d => ({
-          _id: d._id,
-          name: d.name,
-          company: d.company,
-          category: 'cold_drinks',
-          sizes: d.sizes
-            .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
-            .map(s => ({
-              _id: s._id,
-              size: s.size,
-              price: s.salePrice,
-              currentStock: s.currentStock,
-            })),
-        }))
-        .filter(d => d.sizes.length > 0);
-    } catch (e) {
-      const invDrinks = await Inventory.find({
-        branchId, category: 'cold_drinks', isActive: true, currentStock: { $gt: 0 },
-      }).lean();
-      coldDrinks = invDrinks.map(d => ({
+ 
+    const deals = rawDeals.map(d => ({ ...d, price: d.discountedPrice }));
+ 
+    const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
+ 
+    const coldDrinks = rawColdDrinks
+      .map(d => ({
         _id: d._id,
         name: d.name,
+        company: d.company,
+        description: d.company,
         category: 'cold_drinks',
-        price: d.salePrice || d.price,
-        salePrice: d.salePrice || d.price,
-      }));
-    }
-
-    console.log(`[DeliveryMenu] Branch:${branchId} Products:${products.length} Deals:${deals.length} Drinks:${coldDrinks.length}`);
-
+        sizes: d.sizes
+          .filter(s => s.currentStock > 0 && (!s.expiryDate || new Date(s.expiryDate) > now))
+          .map(s => ({
+            _id: s._id,
+            size: s.size,
+            price: s.salePrice,
+            currentStock: s.currentStock,
+          })),
+      }))
+      .filter(d => d.sizes.length > 0);
+ 
     res.json({
       success: true,
       menu: { products, deals, coldDrinks },
