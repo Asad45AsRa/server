@@ -27,17 +27,7 @@ exports.getMenu = async (req, res) => {
       .lean();
 
     // ✅ FIX: Include deals with no date range OR valid date range
-    const rawDeals = await Deal.find({
-      branchId,
-      isActive: true,
-      $or: [
-        { validFrom: { $lte: now }, validUntil: { $gte: now } }, // valid date range
-        { validFrom: { $exists: false } },                        // no date set
-        { validFrom: null },                                      // date is null
-        { validUntil: { $exists: false } },                       // no end date
-        { validUntil: null },                                     // end date null
-      ],
-    })
+    await Deal.find({ branchId, isActive: true })
       .populate('products.productId', 'name image')
       .lean();
 
