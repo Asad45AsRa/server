@@ -1016,14 +1016,24 @@ exports.getAdminTodayReport = async (req, res) => {
     const { branchId } = req.query;
     const { sessionStart, sessionEnd } = getAdminSessionWindow();
  
-    // ── Base filter builders ──────────────────────────────────────
-    const branchFilter   = branchId ? { branchId } : {};
-    const orderQ         = { ...branchFilter, createdAt:  { $gte: sessionStart, $lte: sessionEnd } };
-    const paymentQ       = { ...branchFilter, paidAt:     { $gte: sessionStart, $lte: sessionEnd }, status: 'paid' };
-    const expenseQ       = { ...branchFilter, date:       { $gte: sessionStart, $lte: sessionEnd } };
-    const completedOrderQ = { ...orderQ, status: 'completed' };
+    const branchFilter = branchId ? { branchId } : {};
  
-    // ── Parallel DB queries ───────────────────────────────────────
+    // ── Order / Payment filters ────────────────────────────────────
+    const orderQ   = { ...branchFilter, createdAt:  { $gte: sessionStart, $lte: sessionEnd } };
+    const paymentQ = { ...branchFilter, paidAt:     { $gte: sessionStart, $lte: sessionEnd }, status: 'paid' };
+ 
+    // ── FIX: Expense query — match date OR createdAt ───────────────
+    // Cashier expenses may store `date` as midnight OR use createdAt
+    // Using $or catches both cases
+    const expenseQ = {
+      ...branchFilter,
+      $or: [
+        { date:      { $gte: sessionStart, $lte: sessionEnd } },
+        { createdAt: { $gte: sessionStart, $lte: sessionEnd } },
+      ],
+    };
+ 
+    // ── Parallel fetches ───────────────────────────────────────────
     const [
       totalOrders,
       completedOrders,
@@ -1036,7 +1046,7 @@ exports.getAdminTodayReport = async (req, res) => {
       Order.countDocuments(orderQ),
       Order.countDocuments({ ...orderQ, status: 'completed' }),
       Order.countDocuments({ ...orderQ, status: 'pending' }),
-      Order.countDocuments({ ...orderQ, status: { $in: ['cancelled'] } }),
+      Order.countDocuments({ ...orderQ, status: 'cancelled' }),
  
       Order.find(orderQ)
         .populate('branchId', 'name')
@@ -1052,8 +1062,8 @@ exports.getAdminTodayReport = async (req, res) => {
         .lean(),
     ]);
  
-    // ── Revenue breakdown ─────────────────────────────────────────
-    const totalRevenue  = payments.reduce((s, p) => s + (p.amount || 0), 0);
+    // ── Revenue ────────────────────────────────────────────────────
+    const totalRevenue = payments.reduce((s, p) => s + (p.amount || 0), 0);
     const paymentMethods = payments.reduce((acc, p) => {
       const m = p.method || 'cash';
       if (!acc[m]) acc[m] = { count: 0, total: 0 };
@@ -1062,44 +1072,60 @@ exports.getAdminTodayReport = async (req, res) => {
       return acc;
     }, {});
  
-    // ── Expenses ──────────────────────────────────────────────────
-    const totalExpenses    = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-    const expenseByCategory = expenses.reduce((acc, e) => {
+    // ── Expenses — deduplicate (avoid counting same expense twice if
+    //    both date AND createdAt fall in range)
+    const uniqueExpenses = [];
+    const seenIds = new Set();
+    for (const e of expenses) {
+      const id = String(e._id);
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        uniqueExpenses.push(e);
+      }
+    }
+ 
+    const totalExpenses = uniqueExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+    const expenseByCategory = uniqueExpenses.reduce((acc, e) => {
       acc[e.category] = (acc[e.category] || 0) + e.amount;
       return acc;
     }, {});
+    const expenseByBranch = uniqueExpenses.reduce((acc, e) => {
+      const bn = e.branchId?.name || 'Unknown';
+      acc[bn] = (acc[bn] || 0) + e.amount;
+      return acc;
+    }, {});
  
-    // ── Profit / Loss ─────────────────────────────────────────────
+    // ── Profit / Loss ──────────────────────────────────────────────
     const profit       = totalRevenue - totalExpenses;
     const profitMargin = totalRevenue > 0 ? Math.round((profit / totalRevenue) * 100) : 0;
  
-    // ── Products sold (aggregate from all orders) ─────────────────
+    // ── Products sold (non cold-drink) ─────────────────────────────
     const productMap   = {};
     let totalItemsSold = 0;
+ 
     orders.forEach(order => {
       (order.items || []).forEach(item => {
-        if (item.isColdDrink || item.type === 'cold_drink') return; // separate section
+        if (item.isColdDrink || item.type === 'cold_drink') return;
         const key = `${item.name}__${item.size || ''}`;
         if (!productMap[key]) {
           productMap[key] = { name: item.name, size: item.size || '-', qty: 0, revenue: 0 };
         }
         productMap[key].qty     += item.quantity || 1;
         productMap[key].revenue += (item.price || 0) * (item.quantity || 1);
-        totalItemsSold           += item.quantity || 1;
+        totalItemsSold          += item.quantity || 1;
       });
     });
+ 
     const topProducts = Object.values(productMap).sort((a, b) => b.qty - a.qty);
  
-    // ── Cold drinks sold ──────────────────────────────────────────
-    const coldDrinkMap     = {};
-    let cdTotalQty         = 0;
-    let cdTotalRevenue     = 0;
+    // ── Cold drinks ────────────────────────────────────────────────
+    const coldDrinkMap       = {};
+    let cdTotalQty           = 0;
+    let cdTotalRevenue       = 0;
     let ordersWithColdDrinks = 0;
  
     orders.forEach(order => {
-      const cdItems = (order.items || []).filter(
-        i => i.isColdDrink || i.type === 'cold_drink'
-      );
+      const cdItems = (order.items || []).filter(i => i.isColdDrink || i.type === 'cold_drink');
       if (cdItems.length) ordersWithColdDrinks++;
       cdItems.forEach(item => {
         const key = `${item.name}__${item.size || ''}`;
@@ -1108,14 +1134,15 @@ exports.getAdminTodayReport = async (req, res) => {
         }
         coldDrinkMap[key].qty     += item.quantity || 1;
         coldDrinkMap[key].revenue += (item.price || 0) * (item.quantity || 1);
-        cdTotalQty                 += item.quantity || 1;
-        cdTotalRevenue             += (item.price || 0) * (item.quantity || 1);
-        totalItemsSold             += item.quantity || 1;
+        cdTotalQty                += item.quantity || 1;
+        cdTotalRevenue            += (item.price || 0) * (item.quantity || 1);
+        totalItemsSold            += item.quantity || 1;
       });
     });
+ 
     const coldDrinksList = Object.values(coldDrinkMap).sort((a, b) => b.qty - a.qty);
  
-    // ── Order type breakdown ──────────────────────────────────────
+    // ── Order type breakdown ───────────────────────────────────────
     const orderTypeMap = orders.reduce((acc, o) => {
       const t = o.orderType || 'unknown';
       if (!acc[t]) acc[t] = { count: 0, revenue: 0 };
@@ -1124,17 +1151,17 @@ exports.getAdminTodayReport = async (req, res) => {
       return acc;
     }, {});
  
-    // ── Branch breakdown ──────────────────────────────────────────
+    // ── Branch breakdown ───────────────────────────────────────────
     const branchMap = orders.reduce((acc, o) => {
       const bn = o.branchId?.name || 'Unknown';
       if (!acc[bn]) acc[bn] = { count: 0, revenue: 0, completed: 0 };
       acc[bn].count++;
-      acc[bn].revenue   += o.totalAmount || o.total || 0;
+      acc[bn].revenue += o.totalAmount || o.total || 0;
       if (o.status === 'completed') acc[bn].completed++;
       return acc;
     }, {});
  
-    // ── Hourly revenue (for mini chart) ──────────────────────────
+    // ── Hourly revenue ─────────────────────────────────────────────
     const hourlyMap = {};
     payments.forEach(p => {
       const h = new Date(p.paidAt).getHours();
@@ -1144,9 +1171,7 @@ exports.getAdminTodayReport = async (req, res) => {
     });
     const hourlyData = Object.values(hourlyMap).sort((a, b) => a.hour - b.hour);
  
-    // ── Avg order value ───────────────────────────────────────────
-    const avgOrderValue = completedOrders > 0
-      ? Math.round(totalRevenue / completedOrders) : 0;
+    const avgOrderValue = completedOrders > 0 ? Math.round(totalRevenue / completedOrders) : 0;
  
     res.json({
       success: true,
@@ -1172,15 +1197,15 @@ exports.getAdminTodayReport = async (req, res) => {
       },
       expenses: {
         total      : totalExpenses,
-        count      : expenses.length,
+        count      : uniqueExpenses.length,
         byCategory : expenseByCategory,
-        list       : expenses.slice(0, 50),
+        byBranch   : expenseByBranch,
+        list       : uniqueExpenses.slice(0, 100),
       },
       inventory: {
-        // Regular products sold (used for inventory consumption awareness)
         totalItemsSold,
-        totalProducts  : topProducts.length,
-        topSelling     : topProducts.slice(0, 20),
+        totalProducts : topProducts.length,
+        topSelling    : topProducts.slice(0, 20),
       },
       coldDrinks: {
         ordersWithColdDrinks,
@@ -1203,5 +1228,5 @@ exports.getAdminTodayReport = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
+ 
 module.exports = exports;
