@@ -1119,4 +1119,106 @@ exports.getBarmanStockRequests = async (req, res) => {
   }
 };
 
+exports.rejectBarmanRequest = async (req, res) => {
+  try {
+    const BarmanColdDrinkRequest = require('../models/BarmanColdDrinkRequest');
+    const { reason } = req.body;
+ 
+    const request = await BarmanColdDrinkRequest.findById(req.params.id);
+    if (!request)
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    if (request.status !== 'pending')
+      return res.status(400).json({ success: false, message: 'Only pending requests can be rejected' });
+ 
+    request.status          = 'rejected';
+    request.rejectedBy      = req.user._id;
+    request.rejectionReason = reason || 'No reason provided';
+    await request.save();
+ 
+    res.json({ success: true, request, message: 'Barman request rejected' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getBarmanInventoryRecords = async (req, res) => {
+  try {
+    const BarmanInventory = require('../models/BarmanInventory');
+    const { status, barmanId } = req.query;
+ 
+    const query = { branchId: req.user.branchId };
+    if (status)   query.status   = status;
+    if (barmanId) query.barmanId = barmanId;
+ 
+    const records = await BarmanInventory.find(query)
+      .populate('barmanId',  'name')
+      .populate('issuedBy',  'name')
+      .sort({ date: -1 });
+ 
+    res.json({ success: true, records, count: records.length });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.receiveBarmanReturn = async (req, res) => {
+  try {
+    const BarmanInventory = require('../models/BarmanInventory');
+    const ColdDrink       = require('../models/Colddrink');
+ 
+    const { barmanInventoryId, returnedItems, notes } = req.body;
+ 
+    const record = await BarmanInventory.findById(barmanInventoryId);
+    if (!record)
+      return res.status(404).json({ success: false, message: 'Barman inventory record not found' });
+    if (record.status === 'returned')
+      return res.status(400).json({ success: false, message: 'Already fully returned' });
+ 
+    for (const ret of returnedItems) {
+      // Find matching item in barman record
+      const recordItem = record.items.find(
+        i =>
+          i.coldDrinkId.toString()     === ret.coldDrinkId.toString() &&
+          i.coldDrinkSizeId.toString() === ret.coldDrinkSizeId.toString()
+      );
+      if (!recordItem) continue;
+ 
+      // Max returnable = issued − delivered − already returned
+      const maxReturn = recordItem.issuedQuantity - recordItem.deliveredQuantity - recordItem.returnedQuantity;
+      const toReturn  = Math.min(parseFloat(ret.returnedQuantity) || 0, maxReturn);
+      if (toReturn <= 0) continue;
+ 
+      // Add back to ColdDrink size stock
+      const drink = await ColdDrink.findById(ret.coldDrinkId);
+      if (drink) {
+        const variant = drink.sizes.id(ret.coldDrinkSizeId);
+        if (variant) {
+          variant.currentStock += toReturn;
+          await drink.save();
+        }
+      }
+ 
+      recordItem.returnedQuantity += toReturn;
+    }
+ 
+    // Update overall status
+    const allDone = record.items.every(
+      i => i.deliveredQuantity + i.returnedQuantity >= i.issuedQuantity
+    );
+    record.status = allDone ? 'returned' : 'partial_return';
+    if (allDone) record.returnedAt = new Date();
+    if (notes) record.notes = (record.notes ? record.notes + ' | ' : '') + notes;
+    await record.save();
+ 
+    res.json({
+      success: true,
+      barmanInventory: record,
+      message: 'Barman return received & cold drink stock updated',
+    });
+  } catch (error) {
+    console.error('receiveBarmanReturn error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
