@@ -1117,4 +1117,178 @@ exports.addManualPayment = async (req, res) => {
   }
 };
 
+exports.replaceOrderPayment = async (req, res) => {
+  try {
+    const { orderId, newMethod, transactionId, notes } = req.body;
+ 
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId zaroori hai' });
+    }
+    if (!newMethod) {
+      return res.status(400).json({ success: false, message: 'newMethod zaroori hai' });
+    }
+ 
+    const validMethods = ['cash', 'card', 'online', 'jazz_cash', 'easypaisa'];
+    if (!validMethods.includes(newMethod)) {
+      return res.status(400).json({ success: false, message: `Invalid method. Valid: ${validMethods.join(', ')}` });
+    }
+ 
+    // Verify order belongs to this branch
+    const order = await Order.findOne({ _id: orderId, branchId: req.user.branchId });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order nahi mila ya unauthorized' });
+    }
+ 
+    // Find the most recent paid Payment for this order
+    const payment = await Payment.findOne({
+      orderId,
+      branchId: req.user.branchId,
+      status: 'paid',
+    }).sort({ paidAt: -1 });
+ 
+    if (!payment) {
+      return res.status(404).json({ success: false, message: 'Is order ki koi paid payment nahi mili' });
+    }
+ 
+    const oldMethod = payment.method;
+ 
+    if (oldMethod === newMethod) {
+      return res.status(400).json({ success: false, message: `Method already ${newMethod} hai — change karna zaroori nahi` });
+    }
+ 
+    // Replace method in place
+    payment.method = newMethod;
+    if (transactionId) payment.transactionId = transactionId;
+    if (notes) payment.notes = (payment.notes ? payment.notes + ' | ' : '') + notes;
+    payment.updatedAt = new Date();
+    await payment.save();
+ 
+    const populated = await Payment.findById(payment._id)
+      .populate('cashierId', 'name')
+      .populate('orderId', 'orderNumber total orderType');
+ 
+    res.json({
+      success: true,
+      payment: populated,
+      oldMethod,
+      newMethod,
+      message: `✅ Payment method replace ho gaya: ${oldMethod} → ${newMethod}`,
+    });
+  } catch (error) {
+    console.error('Replace order payment error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.updateActiveOrder = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { itemsToAdd = [] } = req.body;
+ 
+    if (!itemsToAdd || itemsToAdd.length === 0) {
+      return res.status(400).json({ success: false, message: 'itemsToAdd empty hai' });
+    }
+ 
+    const order = await Order.findById(orderId);
+ 
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+ 
+    if (String(order.branchId) !== String(req.user.branchId)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+ 
+    if (order.status === 'completed' || order.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: `Order already ${order.status} hai — update nahi ho sakta` });
+    }
+ 
+    // Process and merge new items
+    for (const newItem of itemsToAdd) {
+      const itemSubtotal = newItem.subtotal != null
+        ? Number(newItem.subtotal)
+        : Number(newItem.price || 0) * Number(newItem.quantity || 1);
+ 
+      // Try to find matching existing item (same name + size + note) to increment qty
+      const existingIdx = order.items.findIndex(
+        i => i.name === newItem.name &&
+             (i.size || null) === (newItem.size || null) &&
+             (i.note || null) === (newItem.note || null)
+      );
+ 
+      if (existingIdx >= 0) {
+        // Increment existing item
+        const existing = order.items[existingIdx];
+        existing.quantity = (existing.quantity || 1) + Number(newItem.quantity || 1);
+        existing.subtotal = (existing.price || 0) * existing.quantity;
+      } else {
+        // Add as new item
+        order.items.push({
+          itemId:         newItem.itemId || null,
+          itemType:       newItem.itemType || 'Product',
+          type:           newItem.type || 'product',
+          name:           newItem.name || 'Item',
+          size:           newItem.size || null,
+          note:           newItem.note || null,
+          quantity:       Number(newItem.quantity) || 1,
+          price:          Number(newItem.price) || 0,
+          subtotal:       itemSubtotal,
+          isColdDrink:    newItem.isColdDrink || false,
+          coldDrinkId:    newItem.coldDrinkId || null,
+          coldDrinkSizeId: newItem.coldDrinkSizeId || null,
+        });
+      }
+ 
+      // If new cold drink items — mark hasColdDrinks
+      if (newItem.isColdDrink || newItem.type === 'cold_drink') {
+        order.hasColdDrinks = true;
+        order.coldDrinksStatus = 'pending';
+      }
+    }
+ 
+    // Recalculate totals
+    const newSubtotal = order.items.reduce((s, i) => s + (i.subtotal || 0), 0);
+    order.subtotal = newSubtotal;
+    order.total = newSubtotal - (order.discount || 0);
+ 
+    await order.save();
+ 
+    const populatedOrder = await Order.findById(order._id)
+      .populate('cashierId', 'name')
+      .populate('waiterId', 'name')
+      .populate('deliveryBoyId', 'name')
+      .populate('items.itemId');
+ 
+    // Emit socket so kitchen / waiter screen refreshes
+    const io = req.app.get('io');
+    if (io) {
+      io.to(String(req.user.branchId)).emit('order-updated', {
+        orderId:     String(order._id),
+        orderNumber: order.orderNumber,
+        message:     `Order #${order.orderNumber} updated — new items added`,
+        addedCount:  itemsToAdd.length,
+      });
+ 
+      // If cold drinks were added, notify barman
+      const hasColdDrinkAdditions = itemsToAdd.some(i => i.isColdDrink || i.type === 'cold_drink');
+      if (hasColdDrinkAdditions) {
+        io.to(String(req.user.branchId)).emit('new-colddrink-order', {
+          orderId:    String(order._id),
+          orderNumber: order.orderNumber,
+          message:    `🧃 Updated cold drink order #${order.orderNumber}`,
+        });
+      }
+    }
+ 
+    res.json({
+      success: true,
+      order: populatedOrder,
+      message: `✅ Order #${order.orderNumber} update ho gaya — ${itemsToAdd.length} item(s) add hue`,
+    });
+  } catch (error) {
+    console.error('Update active order error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;

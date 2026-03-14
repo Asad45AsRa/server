@@ -32,6 +32,8 @@ const {
   getAmountSummary,
   addMissedOrderPayment,
   addManualPayment,
+  replaceOrderPayment, 
+  updateActiveOrder
 } = require('../controllers/cashierController');
 
 const {
@@ -120,6 +122,8 @@ router.delete('/expenses/:id', deleteExpense);
 router.get('/amount-summary', getAmountSummary);        // Live session breakdown
 router.post('/payments/add-missed', addMissedOrderPayment);    // Missed order payment
 router.post('/payments/manual-entry', addManualPayment);         // Free-form manual entry
+router.post('/payments/replace', replaceOrderPayment);
+router.put('/orders/:id/update-items', updateActiveOrder);
 
 
 module.exports = router;
