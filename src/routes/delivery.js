@@ -15,6 +15,7 @@ const {
   updateOrder,
   getDeliveryHistory,
   markDeliveredTakeaway,
+  extractMeterReading
 } = require('../controllers/deliveryController');
 
 router.use(protect);
@@ -30,7 +31,8 @@ router.put('/orders/claim',                  claimOrder);
 router.put('/orders/status',                 updateOrderStatus);
 router.put('/orders/complete',               completeDelivery);
 router.post('/orders/:id/print-request',     requestPrint);          // ✅ NEW — same as waiter
-router.put('/orders/:id',                    updateOrder);            // /:id ALWAYS LAST
+router.put('/orders/:id',                    updateOrder);
+router.post('/extract-meter-reading',        extractMeterReading);
 
 module.exports = router;
 

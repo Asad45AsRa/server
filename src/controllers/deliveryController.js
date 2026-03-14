@@ -276,39 +276,41 @@ exports.claimOrder = async (req, res) => {
   }
 };
 
-// ========== UPDATE ORDER STATUS (out_for_delivery) ==========
-// ✅ No meter reading — just status update + departedAt timestamp
-
 exports.updateOrderStatus = async (req, res) => {
   try {
-    const { orderId, status } = req.body;
-
+    const { orderId, status, departureMeterReading } = req.body;
+ 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
+ 
     if (String(order.deliveryBoyId) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
-
-    // ✅ Takeaway orders — delivery boy directly "delivered" karta hai
-    //    (markDeliveredTakeaway route use karo, yahan sirf delivery orders)
+ 
     if (order.orderType === 'takeaway' && status === 'out_for_delivery') {
       return res.status(400).json({
         success: false,
         message: 'Takeaway orders ke liye /mark-delivered route use karein',
       });
     }
-
+ 
     order.status = status;
-    if (status === 'out_for_delivery') order.departedAt = new Date();
+ 
+    if (status === 'out_for_delivery') {
+      order.departedAt = new Date();
+      // ── NEW: save departure meter reading ──
+      if (departureMeterReading != null && !isNaN(departureMeterReading)) {
+        order.departureMeterReading = parseFloat(departureMeterReading);
+      }
+    }
     if (status === 'delivered') order.deliveredAt = new Date();
-
+ 
     await order.save();
-
+ 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
-
+ 
     res.json({ success: true, order: populatedOrder, message: `Status updated to ${status}` });
   } catch (error) {
     console.error('Update order status error:', error);
@@ -317,52 +319,59 @@ exports.updateOrderStatus = async (req, res) => {
 };
 
 
-// ========== COMPLETE DELIVERY — delivery boy returns ==========
-// ✅ No meter — only cashReceived required
-// Flow: out_for_delivery → returned (delivery boy) → completed (cashier)
-
 exports.completeDelivery = async (req, res) => {
   try {
-    const { orderId, cashReceived } = req.body;
-
+    const { orderId, cashReceived, returnMeterReading } = req.body;
+ 
     if (!orderId || cashReceived === undefined || cashReceived === null) {
       return res.status(400).json({
         success: false,
         message: 'orderId and cashReceived are required',
       });
     }
-
+ 
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
+ 
     if (String(order.deliveryBoyId) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
-
+ 
     if (order.status !== 'out_for_delivery') {
       return res.status(400).json({
         success: false,
         message: 'Order must be out_for_delivery to mark as returned',
       });
     }
-
-    order.status = 'returned';
+ 
+    order.status       = 'returned';
     order.cashReceived = parseFloat(cashReceived);
-    order.returnedAt = new Date();
-
+    order.returnedAt   = new Date();
+ 
+    // ── NEW: save return reading and calculate distance ──
+    if (returnMeterReading != null && !isNaN(returnMeterReading)) {
+      order.returnMeterReading = parseFloat(returnMeterReading);
+      if (order.departureMeterReading && order.returnMeterReading > order.departureMeterReading) {
+        order.distanceTravelled = parseFloat(
+          (order.returnMeterReading - order.departureMeterReading).toFixed(1)
+        );
+      }
+    }
+ 
     await order.save();
-
+ 
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
-
+ 
     res.json({
       success: true,
       order: populatedOrder,
       summary: {
-        cashReceived: order.cashReceived,
-        orderTotal: order.total,
-        change: parseFloat(cashReceived) - order.total,
+        cashReceived:       order.cashReceived,
+        orderTotal:         order.total,
+        change:             parseFloat(cashReceived) - order.total,
+        distanceTravelled:  order.distanceTravelled || null,
       },
       message: '🏠 Wapas aa gaye! Cashier se payment verify karwaein — woh order complete karega.',
     });
@@ -371,11 +380,6 @@ exports.completeDelivery = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
-// ========== REQUEST PRINT (same as waiter) ==========
-// ✅ Delivery boy calls this on Depart — Cashier Desktop picks it up and prints
-// This reuses the existing waiter requestPrint logic via shared Order model
-// Route: POST /delivery/orders/:id/print-request  (add to deliver.js)
 
 exports.requestPrint = async (req, res) => {
   try {
@@ -546,6 +550,166 @@ exports.markDeliveredTakeaway = async (req, res) => {
     });
   } catch (error) {
     console.error('markDeliveredTakeaway error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.extractMeterReading = async (req, res) => {
+  try {
+    const { base64Image } = req.body;
+    if (!base64Image) {
+      return res.status(400).json({ success: false, reading: null, message: 'base64Image required' });
+    }
+ 
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      // No API key → tell frontend to use manual mode
+      return res.json({ success: false, reading: null, message: 'OCR not configured — enter manually' });
+    }
+ 
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 50,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
+            },
+            {
+              type: 'text',
+              text: 'This is a bike odometer/speedometer. Extract ONLY the total kilometers reading (odometer value) as a plain number. Return ONLY the number, nothing else. Example: 12345',
+            },
+          ],
+        }],
+      }),
+    });
+ 
+    if (!response.ok) {
+      const err = await response.text();
+      return res.json({ success: false, reading: null, message: `OCR API error: ${response.status}` });
+    }
+ 
+    const data = await response.json();
+    const rawText = data.content?.[0]?.text?.trim() || '';
+    // Extract numeric value — remove commas, spaces, units
+    const numeric = parseFloat(rawText.replace(/[^0-9.]/g, ''));
+ 
+    if (isNaN(numeric) || numeric <= 0) {
+      return res.json({ success: false, reading: null, message: 'Could not extract reading — enter manually' });
+    }
+ 
+    res.json({ success: true, reading: numeric });
+  } catch (error) {
+    console.error('Extract meter reading error:', error);
+    res.json({ success: false, reading: null, message: error.message });
+  }
+};
+
+exports.getDeliveryBoyStats = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const now      = new Date();
+ 
+    // ── Shift window: 9:00 AM → 4:00 AM next day ──
+    // Determine shift start: if current hour < 9, shift started yesterday
+    let shiftStart = new Date(now);
+    shiftStart.setHours(9, 0, 0, 0);
+ 
+    if (now.getHours() < 9) {
+      // Between midnight and 9 AM → shift started yesterday at 9 AM
+      shiftStart.setDate(shiftStart.getDate() - 1);
+    }
+ 
+    const shiftEnd = new Date(shiftStart);
+    shiftEnd.setDate(shiftEnd.getDate() + 1);
+    shiftEnd.setHours(4, 0, 0, 0); // 4 AM next day
+ 
+    // ── Only DELIVERY orders (not takeaway), within this shift ──
+    const orders = await Order.find({
+      branchId,
+      orderType: { $in: ['delivery', null, undefined] }, // exclude takeaway
+      $or: [{ orderType: 'delivery' }, { orderType: { $exists: false } }],
+      createdAt: { $gte: shiftStart, $lte: shiftEnd },
+      deliveryBoyId: { $ne: null },
+    })
+      .populate('deliveryBoyId', 'name phone')
+      .lean();
+ 
+    // ── Group stats by delivery boy ──
+    const statsMap = {};
+    for (const order of orders) {
+      if (!order.deliveryBoyId) continue;
+      // Extra guard: skip takeaway
+      if (order.orderType === 'takeaway') continue;
+ 
+      const dbId = String(order.deliveryBoyId._id || order.deliveryBoyId);
+      if (!statsMap[dbId]) {
+        statsMap[dbId] = {
+          deliveryBoy:      order.deliveryBoyId,
+          totalOrders:      0,
+          completedOrders:  0,
+          activeOrders:     0,
+          totalKm:          0,
+          totalCashCollected: 0,
+          ordersList:       [],
+        };
+      }
+ 
+      statsMap[dbId].totalOrders++;
+ 
+      if (['completed', 'returned'].includes(order.status)) {
+        statsMap[dbId].completedOrders++;
+        statsMap[dbId].totalCashCollected += order.cashReceived || order.total || 0;
+      } else if (!['cancelled'].includes(order.status)) {
+        statsMap[dbId].activeOrders++;
+      }
+ 
+      if (order.distanceTravelled) {
+        statsMap[dbId].totalKm = parseFloat(
+          (statsMap[dbId].totalKm + order.distanceTravelled).toFixed(1)
+        );
+      }
+ 
+      statsMap[dbId].ordersList.push({
+        orderNumber:        order.orderNumber,
+        status:             order.status,
+        total:              order.total,
+        cashReceived:       order.cashReceived,
+        distanceTravelled:  order.distanceTravelled,
+        customerName:       order.customerName,
+        departureMeterReading: order.departureMeterReading,
+        returnMeterReading:    order.returnMeterReading,
+        createdAt:          order.createdAt,
+      });
+    }
+ 
+    const stats = Object.values(statsMap).sort(
+      (a, b) => b.completedOrders - a.completedOrders
+    );
+ 
+    res.json({
+      success: true,
+      shiftStart,
+      shiftEnd,
+      shiftLabel: `${shiftStart.toLocaleDateString('en-PK')} 9:00 AM — ${shiftEnd.toLocaleDateString('en-PK')} 4:00 AM`,
+      stats,
+      summary: {
+        totalDeliveryOrders: orders.filter(o => o.orderType !== 'takeaway').length,
+        totalDeliveryBoys:   stats.length,
+        totalKmAll:          stats.reduce((s, d) => s + d.totalKm, 0).toFixed(1),
+      },
+    });
+  } catch (error) {
+    console.error('Get delivery boy stats error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
