@@ -18,12 +18,17 @@ const orderHasFoodItems = (order) =>
 exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
- 
+
     const orders = await Order.find({
       branchId,
-      hasColdDrinks: true,
       coldDrinksStatus: 'pending',
       status: { $nin: ['completed', 'cancelled'] },
+      // hasColdDrinks flag OR items actually contain cold drinks
+      $or: [
+        { hasColdDrinks: true },
+        { 'items.isColdDrink': true },
+        { 'items.type': 'cold_drink' },
+      ],
     })
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
@@ -31,9 +36,7 @@ exports.getPendingOrders = async (req, res) => {
       .populate('items.itemId')
       .sort({ createdAt: 1 })
       .lean();
- 
-    // Sirf cold drink items filter karke bhejna optional hai —
-    // frontend sab items dekh sake taake context rahe
+
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
     console.error('Barman getPendingOrders error:', error);
@@ -48,33 +51,28 @@ exports.getPendingOrders = async (req, res) => {
 exports.getMyOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
- 
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
     const orders = await Order.find({
       branchId,
-      barmanId: req.user._id,
-      coldDrinksStatus: 'pending',
-      status: { $nin: ['completed', 'cancelled'] },
+      barmanId:              req.user._id,
+      coldDrinksStatus:      'delivered',
+      coldDrinksDeliveredAt: { $gte: today, $lt: tomorrow },
     })
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId')
-      .sort({ createdAt: 1 })
+      .sort({ coldDrinksDeliveredAt: -1 })
       .lean();
- 
+
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
     console.error('Barman getMyOrders error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
- 
-// ══════════════════════════════════════════════════════════════════════════════
-//  DELIVER COLD DRINKS  ← MAIN ACTION
-//  1. ColdDrink stock se deduct karo
-//  2. Order mein coldDrinksStatus = 'delivered' set karo
-//  3. Agar sirf cold drinks wali order hai → status = 'delivered' (cashier complete kar sake)
-//  4. Socket event emit karo → waiter/delivery ko tick dikhaye har cold drink item pe
-// ══════════════════════════════════════════════════════════════════════════════
+
 exports.deliverColdDrinks = async (req, res) => {
   try {
     const { orderId } = req.body;
@@ -231,10 +229,7 @@ exports.getCompletedOrders = async (req, res) => {
   }
 };
  
-// ══════════════════════════════════════════════════════════════════════════════
-//  GET COLD DRINKS STOCK
-//  Barman apni branch ke cold drinks ka stock dekhe
-// ══════════════════════════════════════════════════════════════════════════════
+
 exports.getColdDrinksStock = async (req, res) => {
   try {
     const branchId = req.user.branchId;
@@ -281,9 +276,6 @@ exports.getColdDrinksStock = async (req, res) => {
   }
 };
  
-// ══════════════════════════════════════════════════════════════════════════════
-//  GET SINGLE ORDER
-// ══════════════════════════════════════════════════════════════════════════════
 exports.getOrderById = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
