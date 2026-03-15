@@ -33,7 +33,8 @@ const {
   addMissedOrderPayment,
   addManualPayment,
   replaceOrderPayment, 
-  updateActiveOrder
+  updateActiveOrder,
+  payDeliveryBoyFuel,
 } = require('../controllers/cashierController');
 
 const {
@@ -53,8 +54,10 @@ const {
   deleteExpense,
   getExpenseSummary,
   getExpensesByDateTimeRange,
+  
 
 } = require('../controllers/walletController');
+const deliveryController = require('../controllers/deliveryController');
 
 const coldDrinkCtrl = require('../controllers/Colddrinkcontroller');
 
@@ -124,6 +127,8 @@ router.post('/payments/add-missed', addMissedOrderPayment);    // Missed order p
 router.post('/payments/manual-entry', addManualPayment);         // Free-form manual entry
 router.post('/payments/replace', replaceOrderPayment);
 router.put('/orders/:id/update-items', updateActiveOrder);
+router.get('/delivery/stats',    deliveryController.getDeliveryBoyStats);
+router.post('/delivery/pay-fuel', payDeliveryBoyFuel);
 
 
 module.exports = router;

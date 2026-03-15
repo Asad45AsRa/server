@@ -1291,4 +1291,63 @@ exports.updateActiveOrder = async (req, res) => {
   }
 };
 
+exports.payDeliveryBoyFuel = async (req, res) => {
+  try {
+    const branchId = req.user.branchId;
+    const {
+      deliveryBoyId,
+      deliveryBoyName,
+      totalKm,
+      ratePerKm,
+      totalFuel,
+      note,
+    } = req.body;
+ 
+    // Validate inputs
+    if (!deliveryBoyId) {
+      return res.status(400).json({ success: false, message: 'deliveryBoyId zaroori hai' });
+    }
+    if (!totalFuel || Number(totalFuel) <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid fuel amount zaroori hai' });
+    }
+    if (!totalKm || Number(totalKm) <= 0) {
+      return res.status(400).json({ success: false, message: 'KM 0 hai — fuel expense nahi ban sakta' });
+    }
+ 
+    // Build a clear description
+    const description = note
+      || `Fuel — ${deliveryBoyName || 'Delivery Boy'} | ${totalKm} km × Rs.${ratePerKm}/km`;
+ 
+    // Create expense record (same model as normal expenses)
+    const expense = await Expense.create({
+      branchId,
+      title:         `⛽ Fuel: ${deliveryBoyName || 'Delivery Boy'}`,
+      amount:        Number(totalFuel),
+      category:      'transport',          // ← auto Transport category
+      paymentMethod: 'cash',               // fuel is always paid cash
+      paidTo:        deliveryBoyName || 'Delivery Boy',
+      description,
+      date:          new Date(),
+      addedBy:       req.user._id,
+      // Extra meta so admin can filter fuel expenses separately if needed
+      meta: {
+        isFuelExpense:  true,
+        deliveryBoyId,
+        deliveryBoyName,
+        totalKm:        Number(totalKm),
+        ratePerKm:      Number(ratePerKm),
+      },
+    });
+ 
+    res.json({
+      success: true,
+      expense,
+      message: `✅ Fuel expense Rs.${Number(totalFuel).toLocaleString()} add ho gaya (${totalKm} km × Rs.${ratePerKm})`,
+    });
+  } catch (error) {
+    console.error('Pay delivery boy fuel error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = exports;
