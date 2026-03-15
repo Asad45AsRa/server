@@ -76,82 +76,126 @@ exports.getMyOrders = async (req, res) => {
 exports.deliverColdDrinks = async (req, res) => {
   try {
     const { orderId } = req.body;
- 
-    if (!orderId) {
+
+    if (!orderId)
       return res.status(400).json({ success: false, message: 'orderId zaroori hai' });
-    }
- 
+
     const order = await Order.findById(orderId).populate('items.itemId');
- 
-    if (!order) {
+    if (!order)
       return res.status(404).json({ success: false, message: 'Order nahi mili' });
-    }
- 
-    if (String(order.branchId) !== String(req.user.branchId)) {
+    if (String(order.branchId) !== String(req.user.branchId))
       return res.status(403).json({ success: false, message: 'Yeh aapki branch ki order nahi' });
-    }
- 
-    if (!order.hasColdDrinks) {
+    if (!order.hasColdDrinks)
       return res.status(400).json({ success: false, message: 'Is order mein cold drinks nahi hain' });
-    }
- 
-    if (order.coldDrinksStatus === 'delivered') {
+    if (order.coldDrinksStatus === 'delivered')
       return res.status(400).json({ success: false, message: 'Cold drinks pehle hi deliver ho chuki hain' });
-    }
- 
-    if (['completed', 'cancelled'].includes(order.status)) {
+    if (['completed', 'cancelled'].includes(order.status))
+      return res.status(400).json({ success: false, message: `Order already ${order.status} hai` });
+
+    // ── 1. BarmanInventory aaj ka record dhundo ──────────────────────────────
+    const { today, tomorrow } = getTodayRange();
+    const issuedRecord = await BarmanInventory.findOne({
+      barmanId: req.user._id,
+      status:   { $in: ['active', 'partial_return'] },
+      date:     { $gte: today, $lt: tomorrow },
+    });
+
+    if (!issuedRecord) {
       return res.status(400).json({
         success: false,
-        message: `Order already ${order.status} hai`,
+        noStock: true,
+        message: 'Aapke paas aaj koi issued cold drinks nahi hain. Inventory officer se request karein.',
       });
     }
- 
-    // ── 1. Cold drink stock deduct karo ──────────────────────────────────────
-    const deliveredColdDrinkItems = []; // Socket event ke liye
- 
-    for (const item of order.items) {
-      if (!isColdDrinkItem(item)) continue;
- 
+
+    const coldDrinkItems = order.items.filter(isColdDrinkItem);
+
+    // ── HELPER: issuedRecord.items mein match dhundo ─────────────────────────
+    // Priority: coldDrinkId+sizeId match → phir name+size string match
+    const findIssuedItem = (item) => {
+      // 1st try: exact ID match
+      if (item.coldDrinkId && item.coldDrinkSizeId) {
+        const byId = issuedRecord.items.find(
+          i => String(i.coldDrinkId)     === String(item.coldDrinkId) &&
+               String(i.coldDrinkSizeId) === String(item.coldDrinkSizeId)
+        );
+        if (byId) return byId;
+      }
+
+      // 2nd try: name + size string match (fallback for older orders without IDs)
+      const itemName = (item.name || '').trim().toLowerCase();
+      const itemSize = (item.size || '').trim().toLowerCase();
+
+      if (itemName) {
+        const byName = issuedRecord.items.find(i => {
+          const iName = (i.name || '').trim().toLowerCase();
+          const iSize = (i.size || '').trim().toLowerCase();
+          return iName === itemName && (!itemSize || !iSize || iSize === itemSize);
+        });
+        if (byName) return byName;
+      }
+
+      return null;
+    };
+
+    // ── 2. Stock check — har cold drink item ke liye ──────────────────────────
+    for (const item of coldDrinkItems) {
+      const issuedItem = findIssuedItem(item);
+
+      if (!issuedItem) {
+        return res.status(400).json({
+          success: false,
+          noStock: true,
+          message: `${item.name}${item.size ? ` (${item.size})` : ''} aapki issued stock mein nahi hai. IO se issue karwayein.`,
+        });
+      }
+
+      const available = issuedItem.issuedQuantity - issuedItem.deliveredQuantity - issuedItem.returnedQuantity;
+      if (available < (item.quantity || 1)) {
+        return res.status(400).json({
+          success: false,
+          noStock: true,
+          message: `${item.name}${item.size ? ` (${item.size})` : ''} ka stock kam hai. Available: ${available}, Chahiye: ${item.quantity || 1}`,
+        });
+      }
+    }
+
+    // ── 3. BarmanInventory se deduct karo ─────────────────────────────────────
+    const deliveredColdDrinkItems = [];
+
+    for (const item of coldDrinkItems) {
       deliveredColdDrinkItems.push({
         name:     item.name     || 'Cold Drink',
         size:     item.size     || null,
         quantity: item.quantity || 1,
       });
- 
-      if (item.coldDrinkId && item.coldDrinkSizeId) {
-        try {
-          const drink = await ColdDrink.findById(item.coldDrinkId);
-          if (drink) {
-            const variant = drink.sizes.id(item.coldDrinkSizeId);
-            if (variant) {
-              variant.currentStock = Math.max(0, variant.currentStock - (item.quantity || 1));
-              await drink.save();
-              console.log(
-                `[Barman] Stock deducted: ${drink.name} ${variant.size} -${item.quantity || 1}`
-              );
-            }
-          }
-        } catch (e) {
-          console.error('[Barman] Cold drink stock deduction error (non-fatal):', e.message);
-        }
+
+      const issuedItem = findIssuedItem(item);
+      if (issuedItem) {
+        issuedItem.deliveredQuantity += (item.quantity || 1);
+        console.log(
+          `[Barman] Deducted: ${item.name} ${item.size || ''} -${item.quantity || 1} | ` +
+          `issued: ${issuedItem.issuedQuantity}, delivered now: ${issuedItem.deliveredQuantity}`
+        );
       }
     }
- 
-    // ── 2. Order update karo ─────────────────────────────────────────────────
-    order.coldDrinksStatus     = 'delivered';
-    order.barmanId             = req.user._id;
+
+    await issuedRecord.save();
+
+    // ── 4. Order update karo ─────────────────────────────────────────────────
+    order.coldDrinksStatus      = 'delivered';
+    order.barmanId              = req.user._id;
     order.coldDrinksDeliveredAt = new Date();
- 
-    // ── 3. Cold-drink-only order? → status = 'delivered' so cashier can pay ─
+
     const foodExists = orderHasFoodItems(order);
     if (!foodExists) {
       order.status      = 'delivered';
       order.deliveredAt = new Date();
     }
- 
+
     await order.save();
- 
-    // ── 4. Socket emit → waiter, delivery, cashier ko notify karo ──────────
+
+    // ── 5. Socket emit ────────────────────────────────────────────────────────
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${String(order.branchId)}`).emit('cold-drinks-delivered', {
@@ -164,18 +208,17 @@ exports.deliverColdDrinks = async (req, res) => {
         barmanName:            req.user.name      || 'Barman',
         coldDrinksDeliveredAt: order.coldDrinksDeliveredAt,
         newOrderStatus:        order.status,
-        // Frontend yeh list use kare har cold drink item pe tick dikhane ke liye
         coldDrinkItems:        deliveredColdDrinkItems,
         message: `🧃 Cold drinks delivered for #${order.orderNumber} by ${req.user.name}`,
       });
     }
- 
+
     const populated = await Order.findById(order._id)
       .populate('waiterId',      'name')
       .populate('deliveryBoyId', 'name')
       .populate('barmanId',      'name')
       .populate('items.itemId');
- 
+
     res.json({
       success: true,
       order:   populated,
