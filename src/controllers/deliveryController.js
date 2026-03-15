@@ -279,38 +279,51 @@ exports.claimOrder = async (req, res) => {
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { orderId, status, departureMeterReading } = req.body;
- 
+
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
- 
+
     if (String(order.deliveryBoyId) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
- 
+
     if (order.orderType === 'takeaway' && status === 'out_for_delivery') {
       return res.status(400).json({
         success: false,
         message: 'Takeaway orders ke liye /mark-delivered route use karein',
       });
     }
- 
+
     order.status = status;
- 
+
     if (status === 'out_for_delivery') {
       order.departedAt = new Date();
-      // ── NEW: save departure meter reading ──
-      if (departureMeterReading != null && !isNaN(departureMeterReading)) {
+      if (departureMeterReading != null && !isNaN(Number(departureMeterReading))) {
         order.departureMeterReading = parseFloat(departureMeterReading);
+        console.log(`✅ Departure meter saved: ${order.departureMeterReading} km for order ${order.orderNumber}`);
       }
     }
+
     if (status === 'delivered') order.deliveredAt = new Date();
- 
+
     await order.save();
- 
+
+    // ✅ Socket emit — cashier ko bhi pata chale departure hua
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${String(req.user.branchId)}`).emit('order-updated', {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        newStatus: status,
+        departureMeterReading: order.departureMeterReading || null,
+        message: `🚀 Order #${order.orderNumber} out for delivery`,
+      });
+    }
+
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
- 
+
     res.json({ success: true, order: populatedOrder, message: `Status updated to ${status}` });
   } catch (error) {
     console.error('Update order status error:', error);
@@ -318,62 +331,87 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-
 exports.completeDelivery = async (req, res) => {
   try {
     const { orderId, cashReceived, returnMeterReading } = req.body;
- 
+
     if (!orderId || cashReceived === undefined || cashReceived === null) {
       return res.status(400).json({
         success: false,
         message: 'orderId and cashReceived are required',
       });
     }
- 
+
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
- 
+
     if (String(order.deliveryBoyId) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
- 
+
     if (order.status !== 'out_for_delivery') {
       return res.status(400).json({
         success: false,
         message: 'Order must be out_for_delivery to mark as returned',
       });
     }
- 
-    order.status       = 'returned';
+
+    order.status = 'returned';
     order.cashReceived = parseFloat(cashReceived);
-    order.returnedAt   = new Date();
- 
-    // ── NEW: save return reading and calculate distance ──
-    if (returnMeterReading != null && !isNaN(returnMeterReading)) {
+    order.returnedAt = new Date();
+
+    // ✅ Return meter reading save karo
+    if (returnMeterReading != null && !isNaN(Number(returnMeterReading))) {
       order.returnMeterReading = parseFloat(returnMeterReading);
+
+      // ✅ KM calculate karo — departure se return minus
       if (order.departureMeterReading && order.returnMeterReading > order.departureMeterReading) {
         order.distanceTravelled = parseFloat(
           (order.returnMeterReading - order.departureMeterReading).toFixed(1)
         );
+        console.log(`✅ Distance: ${order.departureMeterReading} → ${order.returnMeterReading} = ${order.distanceTravelled} km`);
+      } else if (order.departureMeterReading) {
+        // ✅ Agar return reading departure se kam hai (galti se) — 0 save karo
+        console.warn(`⚠️ Return reading (${order.returnMeterReading}) < departure (${order.departureMeterReading})`);
+        order.distanceTravelled = 0;
       }
     }
- 
+
     await order.save();
- 
+
     const populatedOrder = await Order.findById(order._id)
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
- 
+
+    // ✅ Cashier ko socket se push karo — KM aur cash sab
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`branch-${String(req.user.branchId)}`).emit('delivery-returned', {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        deliveryBoyName: req.user.name || 'Delivery Boy',
+        cashReceived: order.cashReceived,
+        orderTotal: order.total,
+        change: order.cashReceived - order.total,
+        departureMeterReading: order.departureMeterReading || null,
+        returnMeterReading: order.returnMeterReading || null,
+        distanceTravelled: order.distanceTravelled || null,
+        message: `🏠 Order #${order.orderNumber} wapas aa gaya! Cash: Rs.${order.cashReceived}${order.distanceTravelled ? ` | ${order.distanceTravelled} km` : ''}`,
+      });
+    }
+
     res.json({
       success: true,
       order: populatedOrder,
       summary: {
-        cashReceived:       order.cashReceived,
-        orderTotal:         order.total,
-        change:             parseFloat(cashReceived) - order.total,
-        distanceTravelled:  order.distanceTravelled || null,
+        cashReceived: order.cashReceived,
+        orderTotal: order.total,
+        change: parseFloat(cashReceived) - order.total,
+        departureMeterReading: order.departureMeterReading || null,
+        returnMeterReading: order.returnMeterReading || null,
+        distanceTravelled: order.distanceTravelled || null,
       },
-      message: '🏠 Wapas aa gaye! Cashier se payment verify karwaein — woh order complete karega.',
+      message: `🏠 Wapas aa gaye!${order.distanceTravelled ? ` Distance: ${order.distanceTravelled} km` : ''} Cashier se payment verify karwaein.`,
     });
   } catch (error) {
     console.error('Complete delivery error:', error);
@@ -560,13 +598,21 @@ exports.extractMeterReading = async (req, res) => {
     if (!base64Image) {
       return res.status(400).json({ success: false, reading: null, message: 'base64Image required' });
     }
- 
+
+    // ✅ Strip data URI prefix agar frontend ne bheja ho
+    const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, '');
+
+    // ✅ Size check — 10MB se zyada nahi
+    const sizeBytes = (cleanBase64.length * 3) / 4;
+    if (sizeBytes > 10 * 1024 * 1024) {
+      return res.json({ success: false, reading: null, message: 'Image too large — enter manually' });
+    }
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-      // No API key → tell frontend to use manual mode
       return res.json({ success: false, reading: null, message: 'OCR not configured — enter manually' });
     }
- 
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -575,38 +621,42 @@ exports.extractMeterReading = async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001', // ✅ Haiku faster + cheaper for OCR
         max_tokens: 50,
         messages: [{
           role: 'user',
           content: [
             {
               type: 'image',
-              source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
+              source: { type: 'base64', media_type: 'image/jpeg', data: cleanBase64 },
             },
             {
               type: 'text',
-              text: 'This is a bike odometer/speedometer. Extract ONLY the total kilometers reading (odometer value) as a plain number. Return ONLY the number, nothing else. Example: 12345',
+              text: 'This is a bike odometer. Extract ONLY the total odometer/kilometer reading as a plain integer number. Return ONLY the digits, no units, no text, no explanation. Example response: 12345',
             },
           ],
         }],
       }),
     });
- 
+
     if (!response.ok) {
-      const err = await response.text();
+      const errText = await response.text();
+      console.error('Anthropic API error:', response.status, errText);
       return res.json({ success: false, reading: null, message: `OCR API error: ${response.status}` });
     }
- 
+
     const data = await response.json();
     const rawText = data.content?.[0]?.text?.trim() || '';
-    // Extract numeric value — remove commas, spaces, units
-    const numeric = parseFloat(rawText.replace(/[^0-9.]/g, ''));
- 
-    if (isNaN(numeric) || numeric <= 0) {
+    console.log('OCR raw response:', rawText);
+
+    // ✅ Extract only digits
+    const digitsOnly = rawText.replace(/[^0-9]/g, '');
+    const numeric = parseFloat(digitsOnly);
+
+    if (!digitsOnly || isNaN(numeric) || numeric <= 0) {
       return res.json({ success: false, reading: null, message: 'Could not extract reading — enter manually' });
     }
- 
+
     res.json({ success: true, reading: numeric });
   } catch (error) {
     console.error('Extract meter reading error:', error);
