@@ -80,9 +80,17 @@ const orderSchema = new mongoose.Schema({
   cashReceived: { type: Number },
 
   // ✅ NEW: Meter photos (base64 or URI string — optional, captured from bike meter)
-  startMeterImage: { type: String, default: null },   // photo before departure
-  endMeterImage: { type: String, default: null },   // photo after return
+  startMeterReading: { type: Number, default: null },
+  endMeterReading: { type: Number, default: null },
+  distanceTravelled: { type: Number, default: null },
+  cashReceived: { type: Number, default: null },
 
+  departureMeterReading: { type: Number, default: null },
+  returnMeterReading: { type: Number, default: null },
+
+
+  startMeterImage: { type: String, default: null },
+  endMeterImage: { type: String, default: null },
   // Payment tracking
   paymentMethod: { type: String, default: null },
   receivedAmount: { type: Number, default: 0 },

@@ -19,20 +19,20 @@ exports.getMenu = async (req, res) => {
   try {
     const branchId = req.user.branchId;
     const now = new Date();
- 
+
     const products = await Product.find({ branchId, isAvailable: true })
       .populate('sizes.ingredients.inventoryItemId', 'name currentStock unit')
       .lean();
- 
+
     // ✅ FIX: Waiter jaise sirf isActive check — koi date filter nahi
     const rawDeals = await Deal.find({ branchId, isActive: true })
       .populate('products.productId', 'name image')
       .lean();
- 
+
     const deals = rawDeals.map(d => ({ ...d, price: d.discountedPrice }));
- 
+
     const rawColdDrinks = await ColdDrink.find({ branchId, isActive: true }).lean();
- 
+
     const coldDrinks = rawColdDrinks
       .map(d => ({
         _id: d._id,
@@ -50,7 +50,7 @@ exports.getMenu = async (req, res) => {
           })),
       }))
       .filter(d => d.sizes.length > 0);
- 
+
     res.json({
       success: true,
       menu: { products, deals, coldDrinks },
@@ -299,8 +299,10 @@ exports.updateOrderStatus = async (req, res) => {
     if (status === 'out_for_delivery') {
       order.departedAt = new Date();
       if (departureMeterReading != null && !isNaN(Number(departureMeterReading))) {
+        // ✅ Dono field names mein save karo
         order.departureMeterReading = parseFloat(departureMeterReading);
-        console.log(`✅ Departure meter saved: ${order.departureMeterReading} km for order ${order.orderNumber}`);
+        order.startMeterReading = parseFloat(departureMeterReading); // legacy
+        console.log(`✅ Departure saved: ${order.departureMeterReading} km | order: ${order.orderNumber}`);
       }
     }
 
@@ -308,14 +310,13 @@ exports.updateOrderStatus = async (req, res) => {
 
     await order.save();
 
-    // ✅ Socket emit — cashier ko bhi pata chale departure hua
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${String(req.user.branchId)}`).emit('order-updated', {
         orderId: String(order._id),
         orderNumber: order.orderNumber,
         newStatus: status,
-        departureMeterReading: order.departureMeterReading || null,
+        departureMeterReading: order.departureMeterReading ?? null,
         message: `🚀 Order #${order.orderNumber} out for delivery`,
       });
     }
@@ -352,7 +353,7 @@ exports.completeDelivery = async (req, res) => {
     if (order.status !== 'out_for_delivery') {
       return res.status(400).json({
         success: false,
-        message: 'Order must be out_for_delivery to mark as returned',
+        message: `Order must be out_for_delivery. Current: ${order.status}`,
       });
     }
 
@@ -360,20 +361,22 @@ exports.completeDelivery = async (req, res) => {
     order.cashReceived = parseFloat(cashReceived);
     order.returnedAt = new Date();
 
-    // ✅ Return meter reading save karo
+    // ✅ returnMeterReading save karo — dono field names mein (backward compat)
     if (returnMeterReading != null && !isNaN(Number(returnMeterReading))) {
       order.returnMeterReading = parseFloat(returnMeterReading);
+      order.endMeterReading = parseFloat(returnMeterReading); // legacy field bhi
 
-      // ✅ KM calculate karo — departure se return minus
-      if (order.departureMeterReading && order.returnMeterReading > order.departureMeterReading) {
+      // ✅ departureMeterReading dono field names se check karo
+      const departure = order.departureMeterReading ?? order.startMeterReading ?? null;
+
+      if (departure != null && order.returnMeterReading > departure) {
         order.distanceTravelled = parseFloat(
-          (order.returnMeterReading - order.departureMeterReading).toFixed(1)
+          (order.returnMeterReading - departure).toFixed(1)
         );
-        console.log(`✅ Distance: ${order.departureMeterReading} → ${order.returnMeterReading} = ${order.distanceTravelled} km`);
-      } else if (order.departureMeterReading) {
-        // ✅ Agar return reading departure se kam hai (galti se) — 0 save karo
-        console.warn(`⚠️ Return reading (${order.returnMeterReading}) < departure (${order.departureMeterReading})`);
+        console.log(`✅ KM: ${departure} → ${order.returnMeterReading} = ${order.distanceTravelled} km`);
+      } else {
         order.distanceTravelled = 0;
+        console.warn(`⚠️ distanceTravelled = 0 | departure: ${departure} | return: ${order.returnMeterReading}`);
       }
     }
 
@@ -383,7 +386,7 @@ exports.completeDelivery = async (req, res) => {
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId', 'name');
 
-    // ✅ Cashier ko socket se push karo — KM aur cash sab
+    // ✅ Cashier ko socket push karo
     const io = req.app.get('io');
     if (io) {
       io.to(`branch-${String(req.user.branchId)}`).emit('delivery-returned', {
@@ -393,10 +396,11 @@ exports.completeDelivery = async (req, res) => {
         cashReceived: order.cashReceived,
         orderTotal: order.total,
         change: order.cashReceived - order.total,
-        departureMeterReading: order.departureMeterReading || null,
-        returnMeterReading: order.returnMeterReading || null,
-        distanceTravelled: order.distanceTravelled || null,
-        message: `🏠 Order #${order.orderNumber} wapas aa gaya! Cash: Rs.${order.cashReceived}${order.distanceTravelled ? ` | ${order.distanceTravelled} km` : ''}`,
+        departureMeterReading: order.departureMeterReading ?? order.startMeterReading ?? null,
+        returnMeterReading: order.returnMeterReading ?? null,
+        distanceTravelled: order.distanceTravelled ?? null,
+        message: `🏠 Order #${order.orderNumber} wapas! Cash: Rs.${order.cashReceived}${order.distanceTravelled ? ` | ${order.distanceTravelled} km` : ''
+          }`,
       });
     }
 
@@ -407,11 +411,12 @@ exports.completeDelivery = async (req, res) => {
         cashReceived: order.cashReceived,
         orderTotal: order.total,
         change: parseFloat(cashReceived) - order.total,
-        departureMeterReading: order.departureMeterReading || null,
-        returnMeterReading: order.returnMeterReading || null,
-        distanceTravelled: order.distanceTravelled || null,
+        departureMeterReading: order.departureMeterReading ?? order.startMeterReading ?? null,
+        returnMeterReading: order.returnMeterReading ?? null,
+        distanceTravelled: order.distanceTravelled ?? null,
       },
-      message: `🏠 Wapas aa gaye!${order.distanceTravelled ? ` Distance: ${order.distanceTravelled} km` : ''} Cashier se payment verify karwaein.`,
+      message: `🏠 Wapas aa gaye!${order.distanceTravelled ? ` Distance: ${order.distanceTravelled} km` : ''
+        } Cashier se payment verify karwaein.`,
     });
   } catch (error) {
     console.error('Complete delivery error:', error);
@@ -667,22 +672,22 @@ exports.extractMeterReading = async (req, res) => {
 exports.getDeliveryBoyStats = async (req, res) => {
   try {
     const branchId = req.user.branchId;
-    const now      = new Date();
- 
+    const now = new Date();
+
     // ── Shift window: 9:00 AM → 4:00 AM next day ──
     // Determine shift start: if current hour < 9, shift started yesterday
     let shiftStart = new Date(now);
     shiftStart.setHours(9, 0, 0, 0);
- 
+
     if (now.getHours() < 9) {
       // Between midnight and 9 AM → shift started yesterday at 9 AM
       shiftStart.setDate(shiftStart.getDate() - 1);
     }
- 
+
     const shiftEnd = new Date(shiftStart);
     shiftEnd.setDate(shiftEnd.getDate() + 1);
     shiftEnd.setHours(4, 0, 0, 0); // 4 AM next day
- 
+
     // ── Only DELIVERY orders (not takeaway), within this shift ──
     const orders = await Order.find({
       branchId,
@@ -693,59 +698,59 @@ exports.getDeliveryBoyStats = async (req, res) => {
     })
       .populate('deliveryBoyId', 'name phone')
       .lean();
- 
+
     // ── Group stats by delivery boy ──
     const statsMap = {};
     for (const order of orders) {
       if (!order.deliveryBoyId) continue;
       // Extra guard: skip takeaway
       if (order.orderType === 'takeaway') continue;
- 
+
       const dbId = String(order.deliveryBoyId._id || order.deliveryBoyId);
       if (!statsMap[dbId]) {
         statsMap[dbId] = {
-          deliveryBoy:      order.deliveryBoyId,
-          totalOrders:      0,
-          completedOrders:  0,
-          activeOrders:     0,
-          totalKm:          0,
+          deliveryBoy: order.deliveryBoyId,
+          totalOrders: 0,
+          completedOrders: 0,
+          activeOrders: 0,
+          totalKm: 0,
           totalCashCollected: 0,
-          ordersList:       [],
+          ordersList: [],
         };
       }
- 
+
       statsMap[dbId].totalOrders++;
- 
+
       if (['completed', 'returned'].includes(order.status)) {
         statsMap[dbId].completedOrders++;
         statsMap[dbId].totalCashCollected += order.cashReceived || order.total || 0;
       } else if (!['cancelled'].includes(order.status)) {
         statsMap[dbId].activeOrders++;
       }
- 
+
       if (order.distanceTravelled) {
         statsMap[dbId].totalKm = parseFloat(
           (statsMap[dbId].totalKm + order.distanceTravelled).toFixed(1)
         );
       }
- 
+
       statsMap[dbId].ordersList.push({
-        orderNumber:        order.orderNumber,
-        status:             order.status,
-        total:              order.total,
-        cashReceived:       order.cashReceived,
-        distanceTravelled:  order.distanceTravelled,
-        customerName:       order.customerName,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        total: order.total,
+        cashReceived: order.cashReceived,
+        distanceTravelled: order.distanceTravelled,
+        customerName: order.customerName,
         departureMeterReading: order.departureMeterReading,
-        returnMeterReading:    order.returnMeterReading,
-        createdAt:          order.createdAt,
+        returnMeterReading: order.returnMeterReading,
+        createdAt: order.createdAt,
       });
     }
- 
+
     const stats = Object.values(statsMap).sort(
       (a, b) => b.completedOrders - a.completedOrders
     );
- 
+
     res.json({
       success: true,
       shiftStart,
@@ -754,8 +759,8 @@ exports.getDeliveryBoyStats = async (req, res) => {
       stats,
       summary: {
         totalDeliveryOrders: orders.filter(o => o.orderType !== 'takeaway').length,
-        totalDeliveryBoys:   stats.length,
-        totalKmAll:          stats.reduce((s, d) => s + d.totalKm, 0).toFixed(1),
+        totalDeliveryBoys: stats.length,
+        totalKmAll: stats.reduce((s, d) => s + d.totalKm, 0).toFixed(1),
       },
     });
   } catch (error) {
