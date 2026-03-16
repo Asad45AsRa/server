@@ -1038,16 +1038,24 @@ exports.addMissedOrderPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Valid amount zaroori hai' });
     }
 
-    // Verify the order belongs to this branch
+    // ✅ FIXED: ORD- format aur MongoDB _id dono support
     let order;
-    if (typeof orderId === 'string' && orderId.startsWith('ORD-')) {
-      order = await Order.findOne({ orderNumber: orderId, branchId: req.user.branchId });
+    if (typeof orderId === 'string' && orderId.trim().toUpperCase().startsWith('ORD-')) {
+      order = await Order.findOne({ orderNumber: orderId.trim(), branchId: req.user.branchId });
     } else {
       order = await Order.findOne({ _id: orderId, branchId: req.user.branchId });
     }
 
+    // ✅ FIXED: null check jo pehle missing tha
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order nahi mili — Order ID ya Order Number dobara check karein',
+      });
+    }
+
     const payment = await Payment.create({
-      orderId,
+      orderId: order._id,   // ✅ FIXED: string ki jagah real ObjectId
       branchId,
       amount: Number(amount),
       method: method || 'cash',
@@ -1055,7 +1063,7 @@ exports.addMissedOrderPayment = async (req, res) => {
       cashierId: req.user._id,
       receivedAmount: Number(amount),
       changeAmount: 0,
-      notes: notes || `Missed payment manually added for ${orderNumber || order.orderNumber}`,
+      notes: notes || `Missed payment manually added for ${order.orderNumber}`,
       paidAt: new Date(),
     });
 
@@ -1132,33 +1140,50 @@ exports.replaceOrderPayment = async (req, res) => {
 
     const validMethods = ['cash', 'card', 'online', 'jazz_cash', 'easypaisa'];
     if (!validMethods.includes(newMethod)) {
-      return res.status(400).json({ success: false, message: `Invalid method. Valid: ${validMethods.join(', ')}` });
+      return res.status(400).json({
+        success: false,
+        message: `Invalid method. Valid: ${validMethods.join(', ')}`,
+      });
     }
 
-    // Verify order belongs to this branch
-    const order = await Order.findOne({ _id: orderId, branchId: req.user.branchId });
+    // ✅ FIXED: ORD- format aur MongoDB _id dono support
+    let order;
+    if (typeof orderId === 'string' && orderId.trim().toUpperCase().startsWith('ORD-')) {
+      order = await Order.findOne({ orderNumber: orderId.trim(), branchId: req.user.branchId });
+    } else {
+      order = await Order.findOne({ _id: orderId, branchId: req.user.branchId });
+    }
+
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order nahi mila ya unauthorized' });
+      return res.status(404).json({
+        success: false,
+        message: 'Order nahi mili ya unauthorized — Order ID ya Order Number check karein',
+      });
     }
 
-    // Find the most recent paid Payment for this order
+    // Most recent paid payment for this order
     const payment = await Payment.findOne({
-      orderId,
+      orderId: order._id,   // ✅ FIXED: real ObjectId use
       branchId: req.user.branchId,
       status: 'paid',
     }).sort({ paidAt: -1 });
 
     if (!payment) {
-      return res.status(404).json({ success: false, message: 'Is order ki koi paid payment nahi mili' });
+      return res.status(404).json({
+        success: false,
+        message: 'Is order ki koi paid payment nahi mili',
+      });
     }
 
     const oldMethod = payment.method;
 
     if (oldMethod === newMethod) {
-      return res.status(400).json({ success: false, message: `Method already ${newMethod} hai — change karna zaroori nahi` });
+      return res.status(400).json({
+        success: false,
+        message: `Method already ${newMethod} hai — change karna zaroori nahi`,
+      });
     }
 
-    // Replace method in place
     payment.method = newMethod;
     if (transactionId) payment.transactionId = transactionId;
     if (notes) payment.notes = (payment.notes ? payment.notes + ' | ' : '') + notes;
