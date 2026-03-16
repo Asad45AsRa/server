@@ -1297,52 +1297,44 @@ exports.payDeliveryBoyFuel = async (req, res) => {
     const {
       deliveryBoyId,
       deliveryBoyName,
-      totalKm,
-      ratePerKm,
-      totalFuel,
+      totalKm,        // sirf display/meta ke liye
+      amount,         // ✅ direct amount — no km calculation
       note,
     } = req.body;
- 
-    // Validate inputs
+
     if (!deliveryBoyId) {
       return res.status(400).json({ success: false, message: 'deliveryBoyId zaroori hai' });
     }
-    if (!totalFuel || Number(totalFuel) <= 0) {
-      return res.status(400).json({ success: false, message: 'Valid fuel amount zaroori hai' });
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount zaroori hai' });
     }
-    if (!totalKm || Number(totalKm) <= 0) {
-      return res.status(400).json({ success: false, message: 'KM 0 hai — fuel expense nahi ban sakta' });
-    }
- 
-    // Build a clear description
+
     const description = note
-      || `Fuel — ${deliveryBoyName || 'Delivery Boy'} | ${totalKm} km × Rs.${ratePerKm}/km`;
- 
-    // Create expense record (same model as normal expenses)
+      || `Payment — ${deliveryBoyName || 'Delivery Boy'} | ${totalKm || 0} km`;
+
     const expense = await Expense.create({
       branchId,
-      title:         `⛽ Fuel: ${deliveryBoyName || 'Delivery Boy'}`,
-      amount:        Number(totalFuel),
-      category:      'transport',          // ← auto Transport category
-      paymentMethod: 'cash',               // fuel is always paid cash
+      title:         `💸 Payment: ${deliveryBoyName || 'Delivery Boy'}`,
+      amount:        Number(amount),
+      category:      'transport',
+      paymentMethod: 'cash',
       paidTo:        deliveryBoyName || 'Delivery Boy',
       description,
       date:          new Date(),
       addedBy:       req.user._id,
-      // Extra meta so admin can filter fuel expenses separately if needed
       meta: {
         isFuelExpense:  true,
         deliveryBoyId,
         deliveryBoyName,
-        totalKm:        Number(totalKm),
-        ratePerKm:      Number(ratePerKm),
+        totalKm:        Number(totalKm || 0),
+        manualAmount:   Number(amount),
       },
     });
- 
+
     res.json({
       success: true,
       expense,
-      message: `✅ Fuel expense Rs.${Number(totalFuel).toLocaleString()} add ho gaya (${totalKm} km × Rs.${ratePerKm})`,
+      message: `✅ Rs.${Number(amount).toLocaleString()} payment add ho gaya — ${deliveryBoyName}`,
     });
   } catch (error) {
     console.error('Pay delivery boy fuel error:', error);
