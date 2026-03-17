@@ -1,7 +1,6 @@
+let orderCounter = 1;
 const generateOrderNumber = () => {
-  const timestamp = Date.now();
-  const random = Math.floor(Math.random() * 1000);
-  return `ORD-${timestamp}-${random}`;
+  return `ORD-${String(orderCounter++).padStart(4, '0')}`;
 };
 
 const calculateTotalTime = (items) => {
