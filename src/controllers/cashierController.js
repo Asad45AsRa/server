@@ -9,6 +9,7 @@ const Table = require('../models/Table');
 const Inventory = require('../models/Inventory');
 const Expense = require('../models/Expense'); // ✅ NEW
 const { PaymentStatus } = require('../config/constants');
+const { generateOrderNumber, calculateTotalTime, calculateOrderTotal } = require('../utils/helpers');
 
 const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
 
@@ -888,13 +889,9 @@ exports.createOrder = async (req, res) => {
     const discountAmt = Math.min(Number(discount) || 0, subtotal);
     const total = subtotal - discountAmt;
 
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await Order.countDocuments({
-      branchId,
-      createdAt: { $gte: new Date(today.setHours(0, 0, 0, 0)) },
-    });
-    const orderNumber = `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+    
+    
+    const orderNumber = generateOrderNumber();
 
     // ✅ ADDED: Detect cold drinks in order
     const hasColdDrinksInOrder = processedItems.some(
