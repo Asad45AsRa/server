@@ -50,6 +50,7 @@ const calculateOrderTotal = (items, discount = 0, taxRate = 0) => {
   const total = subtotal + tax - discount;
   return { subtotal, tax, total };
 };
+//Asad
 
 module.exports = {
   generateOrderNumber,
