@@ -890,7 +890,7 @@ exports.createOrder = async (req, res) => {
     const discountAmt = Math.min(Number(discount) || 0, subtotal);
     const total = subtotal - discountAmt;
 
-    const orderNumber = generateOrderNumber();
+    const orderNumber = await generateOrderNumber();
 
     // Detect cold drinks in order
     const hasColdDrinksInOrder = processedItems.some(

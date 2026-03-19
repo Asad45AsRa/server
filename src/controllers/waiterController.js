@@ -280,7 +280,7 @@ exports.createOrder = async (req, res) => {
     }
 
     const orderData = {
-      orderNumber: generateOrderNumber(),
+      orderNumber: await generateOrderNumber(),
       branchId: req.user.branchId,
       orderType,
       items: processedItems,
