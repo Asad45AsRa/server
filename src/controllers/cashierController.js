@@ -876,6 +876,7 @@ exports.createOrder = async (req, res) => {
         type: item.type || 'product',
         name: item.name || 'Item',
         size: item.size || null,
+        note: item.note || null,        // ✅ FIX: Remove/Less/Extra/Cook/Portion notes
         quantity: Number(item.quantity) || 1,
         price: Number(item.price) || 0,
         subtotal: itemSubtotal,
@@ -889,11 +890,9 @@ exports.createOrder = async (req, res) => {
     const discountAmt = Math.min(Number(discount) || 0, subtotal);
     const total = subtotal - discountAmt;
 
-    
-    
     const orderNumber = generateOrderNumber();
 
-    // ✅ ADDED: Detect cold drinks in order
+    // Detect cold drinks in order
     const hasColdDrinksInOrder = processedItems.some(
       item => item.isColdDrink || item.type === 'cold_drink'
     );
@@ -916,7 +915,6 @@ exports.createOrder = async (req, res) => {
       tax: 0,
       status: 'pending',
       cashierId: req.user._id,
-      // ✅ ADDED: Cold drinks flags
       hasColdDrinks: hasColdDrinksInOrder,
       coldDrinksStatus: hasColdDrinksInOrder ? 'pending' : 'delivered',
     });
@@ -936,7 +934,6 @@ exports.createOrder = async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      // ✅ Existing: chef ke liye new-order event
       io.to(String(branchId)).emit('new-order', {
         orderId: order._id,
         orderNumber: order.orderNumber,
@@ -947,7 +944,6 @@ exports.createOrder = async (req, res) => {
         itemCount: processedItems.length,
       });
 
-      // ✅ ADDED: Agar cold drinks hain toh barman ko bhi notify karo
       if (hasColdDrinksInOrder) {
         io.to(String(branchId)).emit('new-colddrink-order', {
           orderId: String(order._id),
@@ -1233,7 +1229,6 @@ exports.updateActiveOrder = async (req, res) => {
         ? Number(newItem.subtotal)
         : Number(newItem.price || 0) * Number(newItem.quantity || 1);
 
-      // Try to find matching existing item (same name + size + note) to increment qty
       const existingIdx = order.items.findIndex(
         i => i.name === newItem.name &&
           (i.size || null) === (newItem.size || null) &&
@@ -1241,12 +1236,10 @@ exports.updateActiveOrder = async (req, res) => {
       );
 
       if (existingIdx >= 0) {
-        // Increment existing item
         const existing = order.items[existingIdx];
         existing.quantity = (existing.quantity || 1) + Number(newItem.quantity || 1);
         existing.subtotal = (existing.price || 0) * existing.quantity;
       } else {
-        // Add as new item
         order.items.push({
           itemId: newItem.itemId || null,
           itemType: newItem.itemType || 'Product',
@@ -1254,6 +1247,7 @@ exports.updateActiveOrder = async (req, res) => {
           name: newItem.name || 'Item',
           size: newItem.size || null,
           note: newItem.note || null,
+          customizations: newItem.customizations || [],
           quantity: Number(newItem.quantity) || 1,
           price: Number(newItem.price) || 0,
           subtotal: itemSubtotal,
@@ -1263,7 +1257,6 @@ exports.updateActiveOrder = async (req, res) => {
         });
       }
 
-      // If new cold drink items — mark hasColdDrinks
       if (newItem.isColdDrink || newItem.type === 'cold_drink') {
         order.hasColdDrinks = true;
         order.coldDrinksStatus = 'pending';
@@ -1275,6 +1268,19 @@ exports.updateActiveOrder = async (req, res) => {
     order.subtotal = newSubtotal;
     order.total = newSubtotal - (order.discount || 0);
 
+    // ✅ ADDED: Chef ko notify karo — cashier ne update kiya
+    order.updatedByWaiter = true;
+    order.updatedByCashier = true;
+    order.waiterUpdatedAt = new Date();
+    order.waiterUpdatedBy = req.user.name || 'Cashier';
+
+    // ✅ ADDED: Agar order ready/delivered tha toh dobara preparing pe lao
+    const wasReadyOrDelivered = ['ready', 'delivered'].includes(order.status);
+    if (wasReadyOrDelivered) {
+      order.status = 'preparing';
+      order.stockDeducted = false;
+    }
+
     await order.save();
 
     const populatedOrder = await Order.findById(order._id)
@@ -1283,17 +1289,34 @@ exports.updateActiveOrder = async (req, res) => {
       .populate('deliveryBoyId', 'name')
       .populate('items.itemId');
 
-    // Emit socket so kitchen / waiter screen refreshes
     const io = req.app.get('io');
     if (io) {
       io.to(String(req.user.branchId)).emit('order-updated', {
         orderId: String(order._id),
         orderNumber: order.orderNumber,
-        message: `Order #${order.orderNumber} updated — new items added`,
+        message: `Order #${order.orderNumber} updated by cashier`,
         addedCount: itemsToAdd.length,
       });
 
-      // If cold drinks were added, notify barman
+      // ✅ ADDED: Chef screen ko specifically notify karo
+      io.to(String(req.user.branchId)).emit('order-updated-by-waiter', {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        orderType: order.orderType,
+        tableNumber: order.tableNumber || null,
+        floor: order.floor || null,
+        status: order.status,
+        statusReset: wasReadyOrDelivered,
+        waiterName: req.user.name || 'Cashier',
+        waiterUpdatedAt: order.waiterUpdatedAt,
+        total: order.total,
+        itemCount: order.items.length,
+        updatedByCashier: true,
+        message: wasReadyOrDelivered
+          ? `⚠️ Cashier ne ready order update ki — dobara check karein!`
+          : `📝 Cashier ne order #${order.orderNumber} update kiya`,
+      });
+
       const hasColdDrinkAdditions = itemsToAdd.some(i => i.isColdDrink || i.type === 'cold_drink');
       if (hasColdDrinkAdditions) {
         io.to(String(req.user.branchId)).emit('new-colddrink-order', {

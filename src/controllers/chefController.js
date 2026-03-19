@@ -1,8 +1,8 @@
-const Order         = require('../models/Order');
-const Inventory     = require('../models/Inventory');
+const Order = require('../models/Order');
+const Inventory = require('../models/Inventory');
 const ChefInventory = require('../models/Chefinventory');
 const { InventoryRequest, InventoryTransaction } = require('../models/InventoryOfficer');
-const notificationService    = require('../services/notificationService');
+const notificationService = require('../services/notificationService');
 const InventoryReturnRequest = require('../models/InventoryReturnRequest');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -18,10 +18,10 @@ const convertToInventoryUnit = (ingredientQty, ingredientUnit, inventoryUnit) =>
   const qty = parseFloat(ingredientQty) || 0;
   if (qty === 0) return 0;
   const fromUnit = (ingredientUnit || '').toLowerCase().trim();
-  const toUnit   = (inventoryUnit  || '').toLowerCase().trim();
+  const toUnit = (inventoryUnit || '').toLowerCase().trim();
   if (fromUnit === toUnit) return qty;
   const fromBase = UNIT_TO_BASE[fromUnit];
-  const toBase   = UNIT_TO_BASE[toUnit];
+  const toBase = UNIT_TO_BASE[toUnit];
   if (!fromBase || !toBase) {
     console.warn(`[UnitConvert] Unknown units: ${fromUnit} → ${toUnit}. Returning qty as-is.`);
     return qty;
@@ -33,7 +33,7 @@ const convertToInventoryUnit = (ingredientQty, ingredientUnit, inventoryUnit) =>
 //  HELPER: aaj ki active inventory check
 // ══════════════════════════════════════════════════════════════════════════════
 const getTodayRange = () => {
-  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
   return { today, tomorrow };
 };
@@ -45,7 +45,7 @@ const getTodayRange = () => {
 exports.getPendingOrders = async (req, res) => {
   try {
     const branchId = req.user.branchId;
- 
+
     // ✅ CHANGED: Chef sirf woh orders dekhe jin mein kam se kam ek food item ho
     // Cold-drink-only orders barman handle karta hai, chef nahi
     const orders = await Order.find({
@@ -55,15 +55,15 @@ exports.getPendingOrders = async (req, res) => {
       items: {
         $elemMatch: {
           isColdDrink: { $ne: true },
-          type:        { $ne: 'cold_drink' },
+          type: { $ne: 'cold_drink' },
         },
       },
     })
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .sort({ createdAt: 1 })
       .lean();
- 
+
     res.json({ success: true, orders, count: orders.length });
   } catch (error) {
     console.error('getPendingOrders error:', error);
@@ -78,16 +78,17 @@ exports.getMyOrders = async (req, res) => {
       chefId: req.user._id,
       status: { $in: ['preparing', 'ready'] },
     })
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .sort({ acceptedAt: 1 })
       .lean();
 
     const ordersWithFlag = orders.map(o => ({
       ...o,
-      updatedByWaiter:  o.updatedByWaiter  || false,
-      waiterUpdatedAt:  o.waiterUpdatedAt  || null,
-      waiterUpdatedBy:  o.waiterUpdatedBy  || null,
+      updatedByWaiter: o.updatedByWaiter || false,
+      updatedByCashier: o.updatedByCashier || false,
+      waiterUpdatedAt: o.waiterUpdatedAt || null,
+      waiterUpdatedBy: o.waiterUpdatedBy || null,
     }));
 
     res.json({ success: true, orders: ordersWithFlag, count: ordersWithFlag.length });
@@ -129,9 +130,9 @@ exports.acceptOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order is not pending' });
 
     // ── Seedha 'preparing' ───────────────────────────────────────────────────
-    order.status      = 'preparing';
-    order.chefId      = req.user._id;
-    order.acceptedAt  = new Date();
+    order.status = 'preparing';
+    order.chefId = req.user._id;
+    order.acceptedAt = new Date();
     order.preparingAt = new Date();
     await order.save();
 
@@ -140,9 +141,9 @@ exports.acceptOrder = async (req, res) => {
       await notificationService.sendOrderNotification(notifyId, order.orderNumber, 'preparing');
 
     const populated = await Order.findById(order._id)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name');
+      .populate('chefId', 'name');
 
     res.json({ success: true, order: populated, message: 'Order accepted and preparing started' });
   } catch (error) {
@@ -158,20 +159,20 @@ exports.updateOrderStatus = async (req, res) => {
     const { orderId, status, additionalDelay } = req.body;
     // NOTE: ColdDrink require HATA diya — chef cold drinks deduct nahi karta ab
     // const ColdDrink = require('../models/Colddrink'); // ← YEH LINE HATAO
- 
+
     const order = await Order.findById(orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
- 
+
     if (order.chefId && order.chefId.toString() !== req.user._id.toString())
       return res.status(403).json({ success: false, message: 'Not authorized' });
- 
+
     order.status = status;
- 
+
     if (additionalDelay && parseInt(additionalDelay) > 0)
       order.additionalDelay = (order.additionalDelay || 0) + parseInt(additionalDelay);
- 
+
     if (status === 'preparing') order.preparingAt = new Date();
- 
+
     // ════════════════════════════════════════════════════════
     //  READY → DEDUCT FOOD INGREDIENTS ONLY + BROADCAST
     //  ✅ CHANGED: Cold drink deduction HATA diya
@@ -179,29 +180,29 @@ exports.updateOrderStatus = async (req, res) => {
     // ════════════════════════════════════════════════════════
     if (status === 'ready' && !order.stockDeducted) {
       order.readyAt = new Date();
- 
+
       const { today, tomorrow } = getTodayRange();
       const chefRecord = await ChefInventory.findOne({
         chefId: req.user._id,
         status: 'active',
         date: { $gte: today, $lt: tomorrow },
       });
- 
+
       let chefRecordDirty = false;
- 
+
       for (const item of order.items) {
         const orderQty = item.quantity || 1;
- 
+
         // ✅ CHANGED: Cold drink items SKIP karo — barman handle karta hai
         if (item.isColdDrink || item.type === 'cold_drink') {
           console.log(`[Chef] Skipping cold drink item: ${item.name} — barman will handle`);
           continue;
         }
- 
+
         // ── PRODUCT INGREDIENTS ─────────────────────────────────────────────
         const Product = require('../models/Product');
         let ingredients = [];
- 
+
         try {
           const product = await Product.findById(item.itemId).lean();
           if (product) {
@@ -213,37 +214,37 @@ exports.updateOrderStatus = async (req, res) => {
         } catch (e) {
           console.error('[Ingredients] Product fetch error:', e.message);
         }
- 
+
         if (ingredients.length === 0) continue;
- 
+
         for (const ing of ingredients) {
           if (!ing.inventoryItemId || !ing.quantity) continue;
- 
+
           try {
             const invItem = await Inventory.findById(ing.inventoryItemId).lean();
             if (!invItem) {
               console.warn(`[Ingredients] Inventory item not found: ${ing.inventoryItemId}`);
               continue;
             }
- 
+
             const ingredientQtyInInventoryUnit = convertToInventoryUnit(
               ing.quantity * orderQty,
               ing.unit || invItem.unit,
               invItem.unit
             );
- 
+
             console.log(
               `[Ingredients] ${invItem.name}: ${ing.quantity * orderQty} ${ing.unit || invItem.unit}` +
               ` → ${ingredientQtyInInventoryUnit.toFixed(4)} ${invItem.unit}`
             );
- 
+
             if (chefRecord) {
               const chefItem = chefRecord.items.find(
                 ci => ci.inventoryItemId.toString() === ing.inventoryItemId.toString()
               );
- 
+
               if (chefItem) {
-                const remaining    = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
+                const remaining = chefItem.issuedQuantity - chefItem.usedQuantity - chefItem.returnedQuantity;
                 const actualDeduct = Math.min(ingredientQtyInInventoryUnit, Math.max(remaining, 0));
                 if (actualDeduct > 0) {
                   chefItem.usedQuantity += actualDeduct;
@@ -269,7 +270,7 @@ exports.updateOrderStatus = async (req, res) => {
           }
         }
       }
- 
+
       if (chefRecord && chefRecordDirty) {
         try {
           await chefRecord.save();
@@ -278,9 +279,9 @@ exports.updateOrderStatus = async (req, res) => {
           console.error('[ChefInventory] Save error:', e.message);
         }
       }
- 
+
       order.stockDeducted = true;
- 
+
       // ── BROADCAST: Delivery order ready + no delivery boy ────────────────
       if (order.orderType === 'delivery' && !order.deliveryBoyId) {
         try {
@@ -288,27 +289,27 @@ exports.updateOrderStatus = async (req, res) => {
           if (io) {
             const branchIdStr = String(order.branchId);
             const populatedForBroadcast = await Order.findById(order._id)
-              .populate('waiterId',     'name')
+              .populate('waiterId', 'name')
               .populate('items.itemId', 'name')
               .lean();
- 
+
             io.to(`branch-${branchIdStr}`).emit('new-unassigned-delivery', {
-              orderId:         String(order._id),
-              orderNumber:     order.orderNumber,
-              customerName:    order.customerName,
-              customerPhone:   order.customerPhone,
+              orderId: String(order._id),
+              orderNumber: order.orderNumber,
+              customerName: order.customerName,
+              customerPhone: order.customerPhone,
               deliveryAddress: order.deliveryAddress,
-              total:           order.total,
-              itemCount:       order.items.length,
+              total: order.total,
+              itemCount: order.items.length,
               items: (populatedForBroadcast.items || []).map(i => ({
-                name:     i.itemId?.name || i.name || 'Item',
-                size:     i.size,
+                name: i.itemId?.name || i.name || 'Item',
+                size: i.size,
                 quantity: i.quantity,
               })),
-              readyAt:  new Date(),
+              readyAt: new Date(),
               branchId: branchIdStr,
             });
- 
+
             console.log(
               `[Chef→Broadcast] ✅ Delivery order ${order.orderNumber} READY → unassigned → broadcast to branch-${branchIdStr}`
             );
@@ -318,18 +319,18 @@ exports.updateOrderStatus = async (req, res) => {
         }
       }
     }
- 
+
     await order.save();
- 
+
     const notifyId = order.waiterId || order.deliveryBoyId;
     if (notifyId)
       await notificationService.sendOrderNotification(notifyId, order.orderNumber, status);
- 
+
     const populated = await Order.findById(order._id)
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
-      .populate('chefId',        'name');
- 
+      .populate('chefId', 'name');
+
     res.json({ success: true, order: populated, message: `Order updated to ${status}` });
   } catch (error) {
     console.error('updateOrderStatus error:', error);
@@ -342,15 +343,15 @@ exports.updateOrderStatus = async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 exports.getCompletedOrders = async (req, res) => {
   try {
-    const page  = parseInt(req.query.page)  || 1;
+    const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 30;
-    const skip  = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
     const orders = await Order.find({
       chefId: req.user._id,
       status: { $in: ['ready', 'delivered', 'completed'] },
     })
-      .populate('waiterId',      'name')
+      .populate('waiterId', 'name')
       .populate('deliveryBoyId', 'name')
       .sort({ readyAt: -1, updatedAt: -1 })
       .skip(skip)
@@ -365,10 +366,10 @@ exports.getCompletedOrders = async (req, res) => {
     res.json({
       success: true,
       orders,
-      count:   orders.length,
+      count: orders.length,
       total,
       page,
-      pages:   Math.ceil(total / limit),
+      pages: Math.ceil(total / limit),
     });
   } catch (error) {
     console.error('getCompletedOrders error:', error);
@@ -381,7 +382,7 @@ exports.acknowledgeOrderUpdate = async (req, res) => {
   try {
     const { orderId } = req.body;
     await Order.findByIdAndUpdate(orderId, {
-      $set: { updatedByWaiter: false },
+      $set: { updatedByWaiter: false, updatedByCashier: false },
     });
     res.json({ success: true });
   } catch (error) {
@@ -468,7 +469,7 @@ exports.returnInventory = async (req, res) => {
       if (!item) continue;
 
       const maxReturnable = item.issuedQuantity - item.usedQuantity - item.returnedQuantity;
-      const actualReturn  = Math.min(parseFloat(ret.returnQuantity), maxReturnable);
+      const actualReturn = Math.min(parseFloat(ret.returnQuantity), maxReturnable);
       if (actualReturn <= 0) continue;
 
       item.returnedQuantity += actualReturn;
@@ -489,7 +490,7 @@ exports.returnInventory = async (req, res) => {
     const allReturned = record.items.every(
       i => i.usedQuantity + i.returnedQuantity >= i.issuedQuantity
     );
-    record.status     = allReturned ? 'returned' : 'partial_return';
+    record.status = allReturned ? 'returned' : 'partial_return';
     record.returnedAt = new Date();
     await record.save();
 
@@ -540,10 +541,10 @@ exports.requestInventory = async (req, res) => {
       return res.status(400).json({ success: false, message: 'At least one item required' });
 
     const normalizedItems = items.map(item => ({
-      inventoryItemId:   item.inventoryItemId || item.itemId,
+      inventoryItemId: item.inventoryItemId || item.itemId,
       requestedQuantity: item.requestedQuantity || item.quantity,
-      unit:              item.unit || 'kg',
-      purpose:           item.purpose || '',
+      unit: item.unit || 'kg',
+      purpose: item.purpose || '',
     }));
 
     const request = await InventoryRequest.create({
@@ -554,8 +555,8 @@ exports.requestInventory = async (req, res) => {
     });
 
     const populated = await InventoryRequest.findById(request._id)
-      .populate('requestedBy',             'name role')
-      .populate('items.inventoryItemId',   'name unit currentStock');
+      .populate('requestedBy', 'name role')
+      .populate('items.inventoryItemId', 'name unit currentStock');
 
     res.status(201).json({ success: true, request: populated, message: 'Request submitted' });
   } catch (error) {
@@ -566,8 +567,8 @@ exports.requestInventory = async (req, res) => {
 exports.getMyRequests = async (req, res) => {
   try {
     const requests = await InventoryRequest.find({ requestedBy: req.user._id })
-      .populate('approvedBy',            'name')
-      .populate('issuedBy',              'name')
+      .populate('approvedBy', 'name')
+      .populate('issuedBy', 'name')
       .populate('items.inventoryItemId', 'name unit currentStock')
       .sort({ requestDate: -1 });
 

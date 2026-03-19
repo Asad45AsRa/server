@@ -24,7 +24,8 @@ const orderSchema = new mongoose.Schema({
     price: { type: Number, required: true },
     subtotal: { type: Number, default: 0 },
     preparationTime: { type: Number, default: 0 },
-
+    note: { type: String, default: null },           // ✅ ADD
+    customizations: [{ type: String }], 
     // Cold drink extra fields
     isColdDrink: { type: Boolean, default: false },
     coldDrinkId: { type: mongoose.Schema.Types.ObjectId, default: null },
@@ -67,6 +68,7 @@ const orderSchema = new mongoose.Schema({
 
   // Waiter update tracking
   updatedByWaiter: { type: Boolean, default: false },
+  updatedByCashier: { type: Boolean, default: false },
   waiterUpdatedAt: { type: Date, default: null },
   waiterUpdatedBy: { type: String, default: null },
 

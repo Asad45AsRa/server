@@ -197,7 +197,13 @@ exports.createOrder = async (req, res) => {
       let itemType = 'Product';
       if (item.type === 'cold_drink') itemType = 'Inventory';
       else if (item.type === 'deal') itemType = 'Deal';
-      return { ...item, itemType: item.itemType || itemType };
+      return {
+        ...item,
+        itemType: item.itemType || itemType,
+        // ✅ ADDED: customizations array save karo (waiter/cashier mobile se aata hai)
+        customizations: Array.isArray(item.customizations) ? item.customizations : [],
+        note: item.note || null,
+      };
     });
 
     if (orderType === 'dine_in') {
