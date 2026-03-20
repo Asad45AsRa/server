@@ -16,19 +16,29 @@ const BRANCH_NAME = 'Al Madina Fast Food Shahkot';
 // ========== INVENTORY DEDUCTION HELPER ==========
 
 function getSessionWindow() {
-  const now = new Date();
-  const hour = now.getHours();
+  const PKT_OFFSET_MS = 5 * 60 * 60 * 1000; // UTC+5
 
-  const sessionStart = new Date(now);
-  if (hour < 9) {
-    // Before 9 AM: session started yesterday
-    sessionStart.setDate(sessionStart.getDate() - 1);
+  const nowUTC = new Date();
+  // nowPKT: UTC time ko PKT mein convert karo (getUTCHours() use hoga)
+  const nowPKT = new Date(nowUTC.getTime() + PKT_OFFSET_MS);
+  const hourPKT = nowPKT.getUTCHours(); // PKT ka actual hour
+
+  // Session start: 9 AM PKT
+  const sessionStartPKT = new Date(nowPKT);
+  if (hourPKT < 9) {
+    // Abhi 9 AM PKT se pehle hai — session kal shuru hua tha
+    sessionStartPKT.setUTCDate(sessionStartPKT.getUTCDate() - 1);
   }
-  sessionStart.setHours(9, 0, 0, 0);
+  sessionStartPKT.setUTCHours(9, 0, 0, 0);
 
-  const sessionEnd = new Date(sessionStart);
-  sessionEnd.setDate(sessionEnd.getDate() + 1);
-  sessionEnd.setHours(4, 0, 0, 0);
+  // Session end: next day 4 AM PKT
+  const sessionEndPKT = new Date(sessionStartPKT);
+  sessionEndPKT.setUTCDate(sessionEndPKT.getUTCDate() + 1);
+  sessionEndPKT.setUTCHours(4, 0, 0, 0);
+
+  // MongoDB queries ke liye UTC mein wapas convert karo
+  const sessionStart = new Date(sessionStartPKT.getTime() - PKT_OFFSET_MS);
+  const sessionEnd = new Date(sessionEndPKT.getTime() - PKT_OFFSET_MS);
 
   return { sessionStart, sessionEnd };
 }
